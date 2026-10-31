@@ -1,14 +1,20 @@
 package com.akrishna87.mail
 
 import android.content.Context
+import android.net.Uri
 import androidx.core.text.HtmlCompat
 import com.sun.mail.imap.IMAPFolder
 import com.sun.mail.imap.IMAPStore
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
+import java.io.Serializable
 import java.util.Date
 import java.util.Properties
+import javax.activation.DataHandler
 import javax.mail.Address
+import javax.mail.AuthenticationFailedException
 import javax.mail.FetchProfile
 import javax.mail.Flags
 import javax.mail.Folder
@@ -19,7 +25,11 @@ import javax.mail.Part
 import javax.mail.Session
 import javax.mail.UIDFolder
 import javax.mail.internet.InternetAddress
+import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
+import javax.mail.internet.MimeMultipart
+import javax.mail.internet.MimeUtility
+import javax.mail.util.ByteArrayDataSource
 
 data class MailFolder(val fullName: String, val name: String, val role: String?, val unread: Int)
 
@@ -52,7 +62,11 @@ data class Draft(
     val body: String = "",
     val inReplyTo: String? = null,
     val references: String? = null,
+    val attachments: List<Attachment> = emptyList(),
 )
+
+/** A file picked on the phone; [uri] is a content:// URI string. */
+data class Attachment(val uri: String, val name: String, val size: Long, val mimeType: String) : Serializable
 
 data class Page(val messages: List<MessageSummary>, val hasMore: Boolean)
 
@@ -84,18 +98,54 @@ class MailService(private val context: Context, private val store: AccountStore)
         return Session.getInstance(p)
     }
 
-    /** Opens an IMAP connection, runs [block] on a background thread, and always closes it. */
-    private suspend fun <T> imap(account: Account, block: (IMAPStore) -> T): T {
-        val secret = secret(account)
-        return withContext(Dispatchers.IO) {
-            val imapStore = session(account).getStore("imaps") as IMAPStore
-            imapStore.connect(account.provider.imapHost, 993, account.email, secret)
+    // Signing in takes a few seconds, so one connection is kept open and reused.
+    private val lock = Mutex()
+    private var connection: IMAPStore? = null
+    private var connectedAccount: Account? = null
+    private var lastUsed = 0L
+
+    /** Runs [block] on a background thread with the open IMAP connection, one operation at a time. */
+    private suspend fun <T> imap(account: Account, block: (IMAPStore) -> T): T = lock.withLock {
+        withContext(Dispatchers.IO) {
+            val reused = connection != null && connectedAccount == account
             try {
-                block(imapStore)
+                block(connected(account))
+            } catch (e: MessagingException) {
+                if (!reused || e is AuthenticationFailedException) throw e
+                // The kept-open connection may have dropped (phone slept, network changed): reconnect once.
+                discard()
+                block(connected(account))
             } finally {
-                runCatching { imapStore.close() }
+                lastUsed = System.currentTimeMillis()
             }
         }
+    }
+
+    private suspend fun connected(account: Account): IMAPStore {
+        val current = connection
+        // After a while idle the connection is often silently dead, and probing it can hang until timeout.
+        val fresh = System.currentTimeMillis() - lastUsed < MAX_IDLE_MS
+        if (current != null && connectedAccount == account && fresh && current.isConnected) return current
+        discard()
+        val imapStore = session(account).getStore("imaps") as IMAPStore
+        imapStore.connect(account.provider.imapHost, 993, account.email, secret(account))
+        connection = imapStore
+        connectedAccount = account
+        return imapStore
+    }
+
+    /** Forgets the kept-open connection and logs it out in the background without waiting. */
+    private fun discard() {
+        connection?.let { old -> Thread { runCatching { old.close() } }.start() }
+        connection = null
+        connectedAccount = null
+    }
+
+    /** Closes the kept-open connection. Blocks, so call it off the main thread. */
+    fun close() {
+        runCatching { connection?.close() }
+        connection = null
+        connectedAccount = null
     }
 
     suspend fun verify(account: Account) = imap(account) { }
@@ -136,10 +186,13 @@ class MailService(private val context: Context, private val store: AccountStore)
         val f = s.getFolder(folderName) as IMAPFolder
         f.open(Folder.READ_WRITE)
         try {
-            val m = f.getMessageByUID(uid) ?: throw MessagingException("This message no longer exists")
+            val remote = f.getMessageByUID(uid) as? MimeMessage
+                ?: throw MessagingException("This message no longer exists")
+            // Copying downloads the whole message at once instead of one request per part.
+            val m = MimeMessage(remote)
+            remote.setFlag(Flags.Flag.SEEN, true)
             val body = Body()
             extract(m, body)
-            m.setFlag(Flags.Flag.SEEN, true)
             val from = m.from?.firstOrNull() as? InternetAddress
             MessageDetail(
                 uid = uid,
@@ -148,7 +201,7 @@ class MailService(private val context: Context, private val store: AccountStore)
                 to = addresses(m.getRecipients(Message.RecipientType.TO)),
                 cc = addresses(m.getRecipients(Message.RecipientType.CC)),
                 subject = m.subject ?: "(no subject)",
-                date = m.sentDate ?: m.receivedDate,
+                date = m.sentDate ?: remote.receivedDate,
                 html = body.html,
                 text = body.text
                     ?: body.html?.let { HtmlCompat.fromHtml(it, HtmlCompat.FROM_HTML_MODE_LEGACY).toString() }
@@ -170,7 +223,14 @@ class MailService(private val context: Context, private val store: AccountStore)
             msg.setRecipients(Message.RecipientType.TO, parseAddresses(draft.to))
             if (draft.cc.isNotBlank()) msg.setRecipients(Message.RecipientType.CC, parseAddresses(draft.cc))
             msg.setSubject(draft.subject, "UTF-8")
-            msg.setText(draft.body, "UTF-8")
+            if (draft.attachments.isEmpty()) {
+                msg.setText(draft.body, "UTF-8")
+            } else {
+                val parts = MimeMultipart()
+                parts.addBodyPart(MimeBodyPart().apply { setText(draft.body, "UTF-8") })
+                draft.attachments.forEach { parts.addBodyPart(attachmentPart(it)) }
+                msg.setContent(parts)
+            }
             msg.sentDate = Date()
             draft.inReplyTo?.let { msg.setHeader("In-Reply-To", it) }
             draft.references?.let { msg.setHeader("References", it) }
@@ -240,6 +300,16 @@ class MailService(private val context: Context, private val store: AccountStore)
         }
     }
 
+    private fun attachmentPart(a: Attachment): MimeBodyPart {
+        val bytes = context.contentResolver.openInputStream(Uri.parse(a.uri))?.use { it.readBytes() }
+            ?: throw MessagingException("Can't read ${a.name}")
+        return MimeBodyPart().apply {
+            dataHandler = DataHandler(ByteArrayDataSource(bytes, a.mimeType))
+            fileName = MimeUtility.encodeText(a.name, "UTF-8", null)
+            disposition = Part.ATTACHMENT
+        }
+    }
+
     private class Body(var html: String? = null, var text: String? = null)
 
     private fun extract(part: Part, body: Body) {
@@ -286,6 +356,7 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     companion object {
         const val PAGE_SIZE = 50
+        private const val MAX_IDLE_MS = 2 * 60 * 1000L
 
         val ROLE_ORDER = listOf("inbox", "starred", "drafts", "sent", "archive", "all", "spam", "trash")
 

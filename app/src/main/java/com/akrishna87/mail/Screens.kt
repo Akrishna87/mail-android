@@ -2,6 +2,7 @@ package com.akrishna87.mail
 
 import android.content.Intent
 import android.text.format.DateUtils
+import android.text.format.Formatter
 import android.webkit.WebResourceRequest
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -63,6 +64,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
@@ -205,6 +207,12 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
             ModalDrawerSheet {
                 Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
                     Text(vm.account?.email.orEmpty(), Modifier.padding(12.dp), style = MaterialTheme.typography.titleSmall)
+                    val status = remember(drawer.isOpen) { vm.newMailStatus() }
+                    Text(
+                        status,
+                        Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                    )
                     HorizontalDivider()
                     vm.folders.forEach { f ->
                         NavigationDrawerItem(
@@ -432,6 +440,11 @@ private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHos
     var cc by rememberSaveable(draft) { mutableStateOf(draft.cc) }
     var subject by rememberSaveable(draft) { mutableStateOf(draft.subject) }
     var body by rememberSaveable(draft) { mutableStateOf(draft.body) }
+    var attachments by rememberSaveable(draft) { mutableStateOf(ArrayList(draft.attachments)) }
+    val context = LocalContext.current
+    val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
+        attachments = ArrayList(attachments + uris.map(vm::describeAttachment))
+    }
 
     Scaffold(
         topBar = {
@@ -441,8 +454,11 @@ private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHos
                     IconButton(onClick = vm::back) { Icon(Icons.Default.Close, contentDescription = "Discard") }
                 },
                 actions = {
+                    TextButton(onClick = { pickFiles.launch("*/*") }) { Text("Attach") }
                     IconButton(
-                        onClick = { vm.send(draft.copy(to = to, cc = cc, subject = subject, body = body)) },
+                        onClick = {
+                            vm.send(draft.copy(to = to, cc = cc, subject = subject, body = body, attachments = attachments))
+                        },
                         enabled = !vm.loading,
                     ) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
@@ -461,6 +477,19 @@ private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHos
             OutlinedTextField(to, { to = it }, label = { Text("To") }, keyboardOptions = emailKeyboard, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(cc, { cc = it }, label = { Text("Cc") }, keyboardOptions = emailKeyboard, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(subject, { subject = it }, label = { Text("Subject") }, modifier = Modifier.fillMaxWidth())
+            attachments.forEach { a ->
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "📎 ${a.name} (${Formatter.formatShortFileSize(context, a.size)})",
+                        Modifier.weight(1f),
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    IconButton(onClick = { attachments = ArrayList(attachments - a) }) {
+                        Icon(Icons.Default.Close, contentDescription = "Remove ${a.name}")
+                    }
+                }
+            }
             OutlinedTextField(body, { body = it }, label = { Text("Message") }, minLines = 10, modifier = Modifier.fillMaxWidth())
         }
     }

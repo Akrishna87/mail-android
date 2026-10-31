@@ -63,5 +63,13 @@ class AccountStore(context: Context) {
         get() = prefs.getLong("lastUidNext", 0)
         set(value) = prefs.edit().putLong("lastUidNext", value).apply()
 
+    /** When the background new-mail check last ran, and its error if it failed. */
+    var lastCheckTime: Long
+        get() = prefs.getLong("lastCheckTime", 0)
+        set(value) = prefs.edit().putLong("lastCheckTime", value).apply()
+    var lastCheckError: String
+        get() = prefs.getString("lastCheckError", "").orEmpty()
+        set(value) = prefs.edit().putString("lastCheckError", value).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

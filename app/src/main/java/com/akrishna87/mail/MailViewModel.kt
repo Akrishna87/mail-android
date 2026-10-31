@@ -2,6 +2,10 @@ package com.akrishna87.mail
 
 import android.app.Application
 import android.content.Intent
+import android.net.Uri
+import android.provider.OpenableColumns
+import android.text.format.DateUtils
+import androidx.core.app.NotificationManagerCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -49,6 +53,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var notice by mutableStateOf<String?>(null)
 
     private var page = 1
+    private var running = 0
     private var pendingMicrosoft: Pair<String, String>? = null
 
     init {
@@ -57,10 +62,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         authService.dispose()
+        Thread { mail.close() }.start()
     }
 
-    private fun launchTask(block: suspend () -> Unit) {
+    /** Runs [block] in the background with a progress bar; on failure shows the error and runs [onError]. */
+    private fun launchTask(onError: () -> Unit = {}, block: suspend () -> Unit) {
         viewModelScope.launch {
+            running += 1
             loading = true
             try {
                 block()
@@ -68,8 +76,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 throw e
             } catch (e: Exception) {
                 notice = friendly(e)
+                onError()
             } finally {
-                loading = false
+                running -= 1
+                loading = running > 0
             }
         }
     }
@@ -134,8 +144,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         NewMailWorker.schedule(getApplication())
         folder = "INBOX"
         screen = Screen.Mailbox
-        loadFolders()
         loadMessages(reset = true)
+        loadFolders()
     }
 
     fun signOut() {
@@ -152,8 +162,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     // --- Mailbox ------------------------------------------------------------------------------
 
     fun refresh() = launchTask {
+        loadMessages(reset = true) // Messages first, so the list shows before the folder counts.
         loadFolders()
-        loadMessages(reset = true)
     }
 
     fun selectFolder(fullName: String) {
@@ -185,28 +195,44 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(uid: Long) {
         val a = account ?: return
+        val f = folder
         message = null
         screen = Screen.Reader(uid)
         launchTask {
-            message = mail.message(a, folder, uid)
+            message = mail.message(a, f, uid)
             val wasUnread = messages.any { it.uid == uid && !it.seen }
             messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
             if (wasUnread) {
                 folders = folders.map {
-                    if (it.fullName == folder) it.copy(unread = maxOf(0, it.unread - 1)) else it
+                    if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it
                 }
             }
         }
     }
 
+    /** Removes the message from the list right away; puts it back if the server refuses. */
     fun delete(uid: Long) {
         val a = account ?: return
-        launchTask {
-            mail.delete(a, folder, uid)
-            messages = messages.filterNot { it.uid == uid }
-            screen = Screen.Mailbox
-            notice = "Message deleted"
+        val f = folder
+        val before = messages
+        messages = messages.filterNot { it.uid == uid }
+        screen = Screen.Mailbox
+        notice = "Message deleted"
+        launchTask(onError = { if (folder == f) messages = before }) {
+            mail.delete(a, f, uid)
         }
+    }
+
+    /** Status line for the new-mail check, shown in the folder menu. */
+    fun newMailStatus(): String {
+        if (!NotificationManagerCompat.from(getApplication()).areNotificationsEnabled()) {
+            return "Notifications are off for Mailroom. Turn them on in Android Settings → Apps → Mailroom."
+        }
+        val time = store.lastCheckTime
+        if (time == 0L) return "New-mail check hasn't run yet"
+        val ago = DateUtils.getRelativeTimeSpanString(time).toString()
+        val error = store.lastCheckError
+        return if (error.isEmpty()) "New mail last checked $ago" else "New-mail check failed $ago: $error"
     }
 
     // --- Writing ------------------------------------------------------------------------------
@@ -247,6 +273,20 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         )
     }
 
+    fun describeAttachment(uri: Uri): Attachment {
+        val resolver = getApplication<Application>().contentResolver
+        var name = uri.lastPathSegment ?: "attachment"
+        var size = 0L
+        resolver.query(uri, arrayOf(OpenableColumns.DISPLAY_NAME, OpenableColumns.SIZE), null, null, null)?.use {
+            if (it.moveToFirst()) {
+                if (!it.isNull(0)) name = it.getString(0)
+                if (!it.isNull(1)) size = it.getLong(1)
+            }
+        }
+        return Attachment(uri.toString(), name, size, resolver.getType(uri) ?: "application/octet-stream")
+    }
+
+    /** Closes the compose screen right away; reopens it with the draft if sending fails. */
     fun send(draft: Draft) {
         val a = account ?: return
         val s = screen as? Screen.Compose ?: return
@@ -254,13 +294,22 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             notice = "Add at least one recipient"
             return
         }
-        launchTask {
+        if (draft.attachments.sumOf { it.size } > MAX_ATTACHMENTS_BYTES) {
+            notice = "Attachments are too big. The limit is 25 MB in total."
+            return
+        }
+        screen = s.returnTo
+        notice = "Sending…"
+        launchTask(onError = { screen = s.copy(draft = draft) }) {
             mail.send(a, draft)
-            screen = s.returnTo
             notice = "Message sent"
         }
     }
 
     private fun formatDate(m: MessageDetail): String =
         m.date?.let { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(it) }.orEmpty()
+
+    private companion object {
+        const val MAX_ATTACHMENTS_BYTES = 25L * 1024 * 1024 // Gmail, Yahoo and Outlook all allow about 25 MB.
+    }
 }

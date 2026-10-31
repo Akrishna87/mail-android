@@ -28,17 +28,24 @@ class NewMailWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     override suspend fun doWork(): Result {
         val store = AccountStore(applicationContext)
         val account = store.load() ?: return Result.success()
+        val mail = MailService(applicationContext, store)
+        store.lastCheckTime = System.currentTimeMillis()
         return try {
-            val (next, fresh) = MailService(applicationContext, store).newMail(account, store.lastUidNext)
+            val (next, fresh) = mail.newMail(account, store.lastUidNext)
             store.lastUidNext = next
+            store.lastCheckError = ""
             if (fresh.isNotEmpty()) notify(fresh)
             Result.success()
         } catch (e: CancellationException) {
             throw e
         } catch (e: AuthenticationFailedException) {
+            store.lastCheckError = "sign-in failed"
             Result.success() // Retrying won't help until the user signs in again.
         } catch (e: Exception) {
+            store.lastCheckError = e.message ?: e.javaClass.simpleName
             Result.retry()
+        } finally {
+            mail.close()
         }
     }
 
