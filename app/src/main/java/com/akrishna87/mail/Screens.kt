@@ -549,7 +549,8 @@ private fun EmailBody(m: MessageDetail, onScrolled: (Boolean) -> Unit) {
                 settings.javaScriptEnabled = false
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                // Phone-width layout; wider newsletters are zoomed out to fit, like Gmail.
+                // Phone-width layout; wider emails are zoomed out to fit, like Gmail. This needs the
+                // viewport meta in emailDocument to leave out initial-scale, which would pin the zoom at 100%.
                 settings.useWideViewPort = true
                 settings.loadWithOverviewMode = true
                 settings.builtInZoomControls = true
@@ -575,7 +576,7 @@ private fun emailDocument(m: MessageDetail, dark: Boolean): String {
         "body{background:#ffffff;color:#1f1f1f} a{color:#0b57d0}"
     }
     return """<!DOCTYPE html><html><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width">
 <style>
 body{margin:0;padding:12px 16px 24px;font-family:Roboto,sans-serif;font-size:15px;line-height:1.5;overflow-wrap:break-word}
 $colors

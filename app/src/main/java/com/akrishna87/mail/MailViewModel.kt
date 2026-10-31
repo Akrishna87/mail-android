@@ -429,7 +429,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val MAX_ATTACHMENTS_BYTES = 25L * 1024 * 1024 // Gmail, Yahoo and Outlook all allow about 25 MB.
-        const val PREFETCH_COUNT = 25
+        const val PREFETCH_COUNT = 50 // The whole first page of the list.
         const val PREFETCH_BATCH = 5
         const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.
         const val RESUME_REFRESH_MS = 60 * 1000L

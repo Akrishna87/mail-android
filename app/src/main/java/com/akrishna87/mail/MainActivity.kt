@@ -4,6 +4,8 @@ import android.Manifest
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
+import android.os.Looper
+import android.webkit.WebView
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -30,6 +32,12 @@ class MainActivity : ComponentActivity() {
         }
         setContent {
             MailTheme { MailApp(vm) }
+        }
+        // The first WebView in a process takes a moment to start the browser engine; do it while
+        // the app is idle, so the first email opens without that delay.
+        Looper.myQueue().addIdleHandler {
+            WebView(applicationContext).destroy()
+            false
         }
     }
 
