@@ -568,6 +568,10 @@ private fun EmailBody(m: MessageDetail, onScrolled: (Boolean) -> Unit) {
     )
 }
 
+/**
+ * Wraps the message in a page sized for the phone. The table/div rules narrow fixed-width emails
+ * (often 600-700px) to the screen so text stays readable; zooming out is only the fallback.
+ */
 private fun emailDocument(m: MessageDetail, dark: Boolean): String {
     val content = m.html ?: plainTextToHtml(m.text)
     val colors = if (m.html == null && dark) {
@@ -580,8 +584,11 @@ private fun emailDocument(m: MessageDetail, dark: Boolean): String {
 <style>
 body{margin:0;padding:12px 16px 24px;font-family:Roboto,sans-serif;font-size:15px;line-height:1.5;overflow-wrap:break-word}
 $colors
-img{max-width:100%;height:auto}
+img{max-width:100%;height:auto !important}
 .plain{white-space:pre-wrap}
+table,tbody,tr,td,th,div,p,img,center,section{max-width:100% !important}
+table{width:auto !important;height:auto !important}
+td,th{min-width:0 !important;height:auto !important}
 </style></head><body>$content</body></html>"""
 }
 
