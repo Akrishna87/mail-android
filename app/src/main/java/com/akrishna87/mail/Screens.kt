@@ -1,6 +1,9 @@
 package com.akrishna87.mail
 
+import android.content.ActivityNotFoundException
+import android.content.Context
 import android.content.Intent
+import android.text.TextUtils
 import android.text.format.DateUtils
 import android.text.format.Formatter
 import android.webkit.WebResourceRequest
@@ -9,7 +12,12 @@ import android.webkit.WebViewClient
 import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.isSystemInDarkTheme
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -18,10 +26,14 @@ import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -33,6 +45,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.Menu
 import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
@@ -53,6 +66,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
@@ -66,6 +80,9 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.toArgb
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
@@ -75,6 +92,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
+import java.util.Calendar
 
 @Composable
 fun MailApp(vm: MailViewModel) {
@@ -83,6 +101,20 @@ fun MailApp(vm: MailViewModel) {
         vm.notice?.let {
             snackbar.showSnackbar(it)
             vm.notice = null
+        }
+    }
+    val context = LocalContext.current
+    LaunchedEffect(vm.openFile) {
+        vm.openFile?.let { file ->
+            val intent = Intent(Intent.ACTION_VIEW)
+                .setDataAndType(file.uri, file.mimeType)
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
+            try {
+                context.startActivity(intent)
+            } catch (e: ActivityNotFoundException) {
+                vm.notice = "No app on this phone can open this file"
+            }
+            vm.openFile = null
         }
     }
     BackHandler(enabled = vm.canGoBack) { vm.back() }
@@ -258,12 +290,14 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
             },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { pad ->
-            Column(Modifier.padding(pad)) {
-                if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+            PullToRefreshBox(
+                isRefreshing = vm.refreshing,
+                onRefresh = vm::refresh,
+                modifier = Modifier.padding(pad).fillMaxSize(),
+            ) {
                 LazyColumn(Modifier.fillMaxSize()) {
                     items(vm.messages, key = { it.uid }) { m ->
                         MessageRow(m) { vm.open(m.uid) }
-                        HorizontalDivider()
                     }
                     if (vm.hasMore) {
                         item {
@@ -277,6 +311,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                     }
                     item { Spacer(Modifier.height(88.dp)) } // Room above the Compose button.
                 }
+                if (vm.loading && !vm.refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         }
     }
@@ -299,26 +334,63 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
 
 @Composable
 private fun MessageRow(m: MessageSummary, onClick: () -> Unit) {
+    val context = LocalContext.current
     val weight = if (m.seen) FontWeight.Normal else FontWeight.Bold
-    Column(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 12.dp),
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp),
     ) {
-        Row {
-            Text(
-                m.from,
-                Modifier.weight(1f),
-                fontWeight = weight,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-            Text(
-                m.date?.let { DateUtils.getRelativeTimeSpanString(it.time).toString() }.orEmpty(),
-                style = MaterialTheme.typography.bodySmall,
-                modifier = Modifier.padding(start = 8.dp),
-            )
+        Avatar(m.from)
+        Spacer(Modifier.width(12.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(m.from, Modifier.weight(1f), fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                Text(
+                    m.date?.let { shortDate(context, it.time) }.orEmpty(),
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = weight,
+                    modifier = Modifier.padding(start = 8.dp),
+                )
+            }
+            Text(m.subject, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            m.preview?.let {
+                Text(
+                    it,
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
         }
-        Text(m.subject, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
     }
+}
+
+/** A coloured circle with the sender's first letter, like Gmail. */
+@Composable
+private fun Avatar(name: String) {
+    val letter = name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar() ?: '?'
+    val color = AVATAR_COLORS[(name.lowercase().hashCode() and Int.MAX_VALUE) % AVATAR_COLORS.size]
+    Box(Modifier.size(40.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+        Text(letter.toString(), color = Color.White, fontWeight = FontWeight.Bold)
+    }
+}
+
+private val AVATAR_COLORS = listOf(
+    Color(0xFF1A73E8), Color(0xFFD93025), Color(0xFF188038), Color(0xFFE37400),
+    Color(0xFF9334E6), Color(0xFF007B83), Color(0xFFC5221F), Color(0xFF5F6368),
+)
+
+/** "Name <address>" -> "Name"; a bare address stays as is. */
+private fun displayName(address: String): String =
+    address.substringBefore(" <").trim().trim('"').ifEmpty { address }
+
+/** Time for today, "Oct 26" for this year, otherwise the full date. */
+private fun shortDate(context: Context, millis: Long): String = when {
+    DateUtils.isToday(millis) -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_TIME)
+    Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.YEAR) ==
+        Calendar.getInstance().get(Calendar.YEAR) ->
+        DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH or DateUtils.FORMAT_NO_YEAR)
+    else -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NUMERIC_DATE)
 }
 
 private fun folderLabel(f: MailFolder): String = when (f.role) {
@@ -339,8 +411,8 @@ private fun folderLabel(f: MailFolder): String = when (f.role) {
 @Composable
 private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostState) {
     var confirmDelete by remember { mutableStateOf(false) }
+    var scrolled by remember(uid) { mutableStateOf(false) }
     val m = vm.message
-    val context = LocalContext.current
 
     Scaffold(
         topBar = {
@@ -354,39 +426,38 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                 },
             )
         },
+        bottomBar = {
+            if (m != null) {
+                Row(
+                    Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    OutlinedButton(onClick = { vm.reply(m, all = false) }, Modifier.weight(1f)) { Text("Reply") }
+                    OutlinedButton(onClick = { vm.reply(m, all = true) }, Modifier.weight(1f)) { Text("Reply all") }
+                    OutlinedButton(onClick = { vm.forward(m) }, Modifier.weight(1f)) { Text("Forward") }
+                }
+            }
+        },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
-            if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            if (m == null) return@Column
-
-            Column(Modifier.padding(horizontal = 16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                Text(m.subject, style = MaterialTheme.typography.titleLarge)
-                Text(m.from, fontWeight = FontWeight.Bold)
-                Text("To: ${m.to.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
-                if (m.cc.isNotEmpty()) Text("Cc: ${m.cc.joinToString(", ")}", style = MaterialTheme.typography.bodySmall)
-                m.date?.let {
-                    Text(
-                        DateUtils.formatDateTime(
-                            context, it.time,
-                            DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_SHOW_YEAR,
-                        ),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                }
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 8.dp)) {
-                    OutlinedButton(onClick = { vm.reply(m, all = false) }) { Text("Reply") }
-                    OutlinedButton(onClick = { vm.reply(m, all = true) }) { Text("Reply all") }
-                    OutlinedButton(onClick = { vm.forward(m) }) { Text("Forward") }
-                }
+            if (m == null) {
+                if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                return@Column
+            }
+            Text(
+                m.subject,
+                Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
+                style = MaterialTheme.typography.titleLarge,
+                maxLines = if (scrolled) 1 else 4,
+                overflow = TextOverflow.Ellipsis,
+            )
+            // The sender details fold away while reading, leaving more room for the message.
+            AnimatedVisibility(visible = !scrolled) {
+                MessageHeader(m, onAttachment = { vm.openAttachment(m, it) })
             }
             HorizontalDivider()
-
-            if (m.html != null) {
-                key(uid) { HtmlBody(m.html) }
-            } else {
-                Text(m.text, Modifier.verticalScroll(rememberScrollState()).padding(16.dp))
-            }
+            key(uid) { EmailBody(m, onScrolled = { scrolled = it }) }
         }
     }
 
@@ -405,30 +476,120 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
     }
 }
 
-/** Shows HTML mail with JavaScript off; links open in the phone's browser. */
 @Composable
-private fun HtmlBody(html: String) {
+private fun MessageHeader(m: MessageDetail, onAttachment: (ReceivedAttachment) -> Unit) {
+    val context = LocalContext.current
+    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Row(verticalAlignment = Alignment.CenterVertically) {
+            Avatar(displayName(m.from))
+            Spacer(Modifier.width(12.dp))
+            Column(Modifier.weight(1f)) {
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        displayName(m.from),
+                        Modifier.weight(1f, fill = false),
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    m.date?.let {
+                        Text(
+                            "  " + shortDate(context, it.time),
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+                Text(
+                    m.fromAddress,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    "to " + (m.to + m.cc).joinToString(", ") { displayName(it) },
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+        }
+        if (m.attachments.isNotEmpty()) {
+            Row(Modifier.horizontalScroll(rememberScrollState()), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                m.attachments.forEach { a ->
+                    AssistChip(
+                        onClick = { onAttachment(a) },
+                        label = {
+                            Text(
+                                "📎 ${a.name} · ${Formatter.formatShortFileSize(context, a.size.toLong())}",
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                        },
+                    )
+                }
+            }
+        }
+    }
+}
+
+/** Shows the message with JavaScript off; links open in the phone's browser. */
+@Composable
+private fun EmailBody(m: MessageDetail, onScrolled: (Boolean) -> Unit) {
+    val dark = isSystemInDarkTheme()
+    // Matches the page background in emailDocument, so there is no flash while it loads.
+    val background = if (m.html == null && dark) Color(0xFF1B1B1F) else Color.White
     AndroidView(
         modifier = Modifier.fillMaxSize(),
         factory = { context ->
             WebView(context).apply {
+                setBackgroundColor(background.toArgb())
                 settings.javaScriptEnabled = false
                 settings.allowFileAccess = false
                 settings.allowContentAccess = false
-                settings.loadWithOverviewMode = true
+                // Phone-width layout; wider newsletters are zoomed out to fit, like Gmail.
                 settings.useWideViewPort = true
+                settings.loadWithOverviewMode = true
                 settings.builtInZoomControls = true
                 settings.displayZoomControls = false
+                setOnScrollChangeListener { _, _, y, _, _ -> onScrolled(y > 0) }
                 webViewClient = object : WebViewClient() {
                     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
                         runCatching { context.startActivity(Intent(Intent.ACTION_VIEW, request.url)) }
                         return true
                     }
                 }
-                loadDataWithBaseURL(null, html, "text/html", "utf-8", null)
+                loadDataWithBaseURL(null, emailDocument(m, dark), "text/html", "utf-8", null)
             }
         },
     )
+}
+
+private fun emailDocument(m: MessageDetail, dark: Boolean): String {
+    val content = m.html ?: plainTextToHtml(m.text)
+    val colors = if (m.html == null && dark) {
+        "body{background:#1b1b1f;color:#e4e2e6} a{color:#a8c7fa}"
+    } else {
+        "body{background:#ffffff;color:#1f1f1f} a{color:#0b57d0}"
+    }
+    return """<!DOCTYPE html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+body{margin:0;padding:12px 16px 24px;font-family:Roboto,sans-serif;font-size:15px;line-height:1.5;overflow-wrap:break-word}
+$colors
+img{max-width:100%;height:auto}
+.plain{white-space:pre-wrap}
+</style></head><body>$content</body></html>"""
+}
+
+private val urlPattern = Regex("""https?://[^\s<>"]+""")
+
+private fun plainTextToHtml(text: String): String {
+    val escaped = TextUtils.htmlEncode(text)
+    val linked = urlPattern.replace(escaped) { """<a href="${it.value}">${it.value}</a>""" }
+    return """<div class="plain">$linked</div>"""
 }
 
 // --- Compose ------------------------------------------------------------------------------------

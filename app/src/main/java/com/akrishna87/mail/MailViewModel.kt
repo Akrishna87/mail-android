@@ -5,15 +5,20 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.text.format.DateUtils
-import androidx.core.app.NotificationManagerCompat
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.FileProvider
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.sun.mail.util.MailConnectException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
 import net.openid.appauth.AuthorizationService
+import java.io.File
 import java.net.UnknownHostException
 import java.text.DateFormat
 import javax.mail.AuthenticationFailedException
@@ -27,9 +32,13 @@ sealed interface Screen {
     data class Compose(val draft: Draft, val returnTo: Screen) : Screen
 }
 
+/** A downloaded attachment for the UI to open with another app. */
+data class OpenFile(val uri: Uri, val mimeType: String)
+
 class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AccountStore(app)
     private val mail = MailService(app, store)
+    private val cache = MailCache(app)
     private val authService = AuthorizationService(app)
 
     var account by mutableStateOf(store.load())
@@ -48,16 +57,32 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var loading by mutableStateOf(false)
         private set
+    var refreshing by mutableStateOf(false)
+        private set
 
     /** One-off message for the snackbar; the UI clears it after showing. */
     var notice by mutableStateOf<String?>(null)
 
+    /** One-off request to open a downloaded attachment; the UI clears it after opening. */
+    var openFile by mutableStateOf<OpenFile?>(null)
+
     private var page = 1
     private var running = 0
+    private var lastRefresh = 0L
+    private var prefetchJob: Job? = null
     private var pendingMicrosoft: Pair<String, String>? = null
 
     init {
-        if (account != null) refresh()
+        if (account != null) {
+            lastRefresh = System.currentTimeMillis()
+            viewModelScope.launch {
+                // Show what was saved last time immediately, then update from the server.
+                val (savedFolders, savedList) = withContext(Dispatchers.IO) { cache.loadFolders() to cache.loadList(folder) }
+                if (messages.isEmpty()) messages = savedList
+                if (folders.isEmpty()) folders = savedFolders
+                refresh()
+            }
+        }
     }
 
     override fun onCleared() {
@@ -109,6 +134,11 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         screen = Screen.Login(provider)
     }
 
+    /** Called when the app comes back on screen: checks for new mail and warms up the connection. */
+    fun onResume() {
+        if (account != null && System.currentTimeMillis() - lastRefresh > RESUME_REFRESH_MS) refresh()
+    }
+
     // --- Sign in / out ------------------------------------------------------------------------
 
     fun signInWithPassword(provider: Provider, name: String, email: String, password: String) = launchTask {
@@ -144,13 +174,17 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         NewMailWorker.schedule(getApplication())
         folder = "INBOX"
         screen = Screen.Mailbox
+        lastRefresh = System.currentTimeMillis()
         loadMessages(reset = true)
+        startPrefetch()
         loadFolders()
     }
 
     fun signOut() {
         NewMailWorker.cancel(getApplication())
+        prefetchJob?.cancel()
         store.clear()
+        Thread { cache.clear() }.start()
         account = null
         folders = emptyList()
         messages = emptyList()
@@ -161,15 +195,31 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Mailbox ------------------------------------------------------------------------------
 
-    fun refresh() = launchTask {
-        loadMessages(reset = true) // Messages first, so the list shows before the folder counts.
-        loadFolders()
+    fun refresh() {
+        lastRefresh = System.currentTimeMillis()
+        refreshing = true
+        launchTask {
+            try {
+                loadMessages(reset = true)
+            } finally {
+                refreshing = false
+            }
+            startPrefetch()
+            loadFolders()
+        }
     }
 
     fun selectFolder(fullName: String) {
         folder = fullName
-        messages = emptyList()
-        launchTask { loadMessages(reset = true) }
+        prefetchJob?.cancel()
+        viewModelScope.launch {
+            val saved = withContext(Dispatchers.IO) { cache.loadList(fullName) }
+            if (folder == fullName) messages = saved
+        }
+        launchTask {
+            loadMessages(reset = true)
+            startPrefetch()
+        }
     }
 
     fun loadMore() = launchTask {
@@ -180,15 +230,61 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadFolders() {
         val a = account ?: return
         folders = mail.folders(a)
+        withContext(Dispatchers.IO) { cache.saveFolders(folders) }
     }
 
     private suspend fun loadMessages(reset: Boolean) {
         val a = account ?: return
+        val f = folder
         if (reset) page = 1
-        val result = mail.messages(a, folder, page)
+        val result = mail.messages(a, f, page)
+        if (f != folder) return
+        // Keep previews of messages that were already downloaded.
+        val previews = messages.associate { it.uid to it.preview }
+        val fresh = result.messages.map { it.copy(preview = previews[it.uid]) }
         // New mail shifts the pages, so the next page can repeat a message.
-        messages = if (reset) result.messages else (messages + result.messages).distinctBy { it.uid }
+        messages = if (reset) fresh else (messages + fresh).distinctBy { it.uid }
         hasMore = result.hasMore
+        if (reset) withContext(Dispatchers.IO) { cache.saveList(f, messages) }
+    }
+
+    /** Downloads the newest messages in the background, so opening them needs no network. */
+    private fun startPrefetch() {
+        val a = account ?: return
+        val f = folder
+        prefetchJob?.cancel()
+        prefetchJob = viewModelScope.launch {
+            try {
+                val wanted = messages.take(PREFETCH_COUNT).filter { it.size < PREFETCH_MAX_BYTES }
+                val (missing, cachedPreviews) = withContext(Dispatchers.IO) {
+                    val missing = wanted.filterNot { cache.has(f, it.uid) }
+                    // Already-downloaded messages only need their preview filled in.
+                    val previews = (wanted - missing.toSet()).filter { it.preview == null }
+                        .mapNotNull { m -> cache.load(f, m.uid)?.let { m.uid to it.preview } }
+                        .toMap()
+                    missing to previews
+                }
+                applyPreviews(f, cachedPreviews)
+                for (batch in missing.chunked(PREFETCH_BATCH)) {
+                    val details = mail.prefetch(a, f, batch.map { it.uid })
+                    withContext(Dispatchers.IO) { details.values.forEach { cache.save(f, it) } }
+                    applyPreviews(f, details.mapValues { it.value.preview })
+                }
+                if (folder == f) {
+                    val snapshot = messages
+                    withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
+                }
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // Downloading ahead is best effort; opening a message fetches it if needed.
+            }
+        }
+    }
+
+    private fun applyPreviews(f: String, previews: Map<Long, String>) {
+        if (previews.isEmpty() || f != folder) return
+        messages = messages.map { m -> previews[m.uid]?.let { m.copy(preview = it) } ?: m }
     }
 
     // --- Reading ------------------------------------------------------------------------------
@@ -199,14 +295,34 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         message = null
         screen = Screen.Reader(uid)
         launchTask {
-            message = mail.message(a, f, uid)
-            val wasUnread = messages.any { it.uid == uid && !it.seen }
-            messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
-            if (wasUnread) {
-                folders = folders.map {
-                    if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it
-                }
-            }
+            val detail = withContext(Dispatchers.IO) { cache.load(f, uid) }
+                ?: mail.message(a, f, uid).also { withContext(Dispatchers.IO) { cache.save(f, it) } }
+            if (screen == Screen.Reader(uid)) message = detail
+            markRead(a, f, uid)
+        }
+    }
+
+    private fun markRead(a: Account, f: String, uid: Long) {
+        if (messages.none { it.uid == uid && !it.seen }) return
+        messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
+        folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
+        val snapshot = messages
+        viewModelScope.launch {
+            runCatching { mail.markSeen(a, f, uid) }
+            withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
+        }
+    }
+
+    fun openAttachment(m: MessageDetail, attachment: ReceivedAttachment) {
+        val a = account ?: return
+        val f = folder
+        notice = "Opening ${attachment.name}…"
+        launchTask {
+            val app = getApplication<Application>()
+            val dir = File(app.cacheDir, "attachments/${m.uid}")
+            val file = mail.saveAttachment(a, f, m.uid, attachment.index, dir)
+            val uri = FileProvider.getUriForFile(app, "${app.packageName}.files", file)
+            openFile = OpenFile(uri, attachment.mimeType)
         }
     }
 
@@ -218,8 +334,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         messages = messages.filterNot { it.uid == uid }
         screen = Screen.Mailbox
         notice = "Message deleted"
+        val snapshot = messages
         launchTask(onError = { if (folder == f) messages = before }) {
             mail.delete(a, f, uid)
+            withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
         }
     }
 
@@ -311,5 +429,9 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     private companion object {
         const val MAX_ATTACHMENTS_BYTES = 25L * 1024 * 1024 // Gmail, Yahoo and Outlook all allow about 25 MB.
+        const val PREFETCH_COUNT = 25
+        const val PREFETCH_BATCH = 5
+        const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.
+        const val RESUME_REFRESH_MS = 60 * 1000L
     }
 }

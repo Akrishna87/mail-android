@@ -32,6 +32,11 @@ class MainActivity : ComponentActivity() {
             MailTheme { MailApp(vm) }
         }
     }
+
+    override fun onResume() {
+        super.onResume()
+        vm.onResume()
+    }
 }
 
 @Composable
