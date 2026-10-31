@@ -35,6 +35,11 @@ sealed interface Screen {
 /** A downloaded attachment for the UI to open with another app. */
 data class OpenFile(val uri: Uri, val mimeType: String)
 
+/** An archive or delete waiting out its Undo snackbar; [id] tells repeats of the same text apart. */
+data class UndoOffer(val text: String, val id: Long)
+
+private class PendingChange(val run: suspend () -> Unit, val restore: () -> Unit)
+
 class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AccountStore(app)
     private val mail = MailService(app, store)
@@ -66,11 +71,20 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     /** One-off request to open a downloaded attachment; the UI clears it after opening. */
     var openFile by mutableStateOf<OpenFile?>(null)
 
+    /** Set while an archive or delete can still be undone. */
+    var undoOffer by mutableStateOf<UndoOffer?>(null)
+        private set
+
+    /** Search shown in place of the folder's messages, or null. */
+    var searchQuery by mutableStateOf<String?>(null)
+        private set
+
     private var page = 1
     private var running = 0
     private var lastRefresh = 0L
     private var prefetchJob: Job? = null
     private var pendingMicrosoft: Pair<String, String>? = null
+    private var pendingChange: PendingChange? = null
 
     init {
         if (account != null) {
@@ -200,7 +214,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         refreshing = true
         launchTask {
             try {
-                loadMessages(reset = true)
+                val q = searchQuery
+                if (q != null) runSearch(q) else loadMessages(reset = true)
             } finally {
                 refreshing = false
             }
@@ -209,7 +224,34 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun search(query: String) {
+        val q = query.trim()
+        if (q.isEmpty()) return clearSearch()
+        searchQuery = q
+        prefetchJob?.cancel()
+        messages = emptyList()
+        hasMore = false
+        launchTask {
+            runSearch(q)
+            startPrefetch()
+        }
+    }
+
+    private suspend fun runSearch(q: String) {
+        val a = account ?: return
+        val f = folder
+        val found = mail.search(a, f, q)
+        if (searchQuery == q && folder == f) messages = found
+    }
+
+    fun clearSearch() {
+        if (searchQuery == null) return
+        searchQuery = null
+        selectFolder(folder)
+    }
+
     fun selectFolder(fullName: String) {
+        searchQuery = null
         folder = fullName
         prefetchJob?.cancel()
         viewModelScope.launch {
@@ -223,6 +265,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadMore() = launchTask {
+        if (searchQuery != null) return@launchTask
         page += 1
         loadMessages(reset = false)
     }
@@ -245,7 +288,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         // New mail shifts the pages, so the next page can repeat a message.
         messages = if (reset) fresh else (messages + fresh).distinctBy { it.uid }
         hasMore = result.hasMore
-        if (reset) withContext(Dispatchers.IO) { cache.saveList(f, messages) }
+        if (reset) persistList(f)
+    }
+
+    /** Saves the shown list for [f], unless it is showing search results. */
+    private suspend fun persistList(f: String) {
+        if (searchQuery != null || f != folder) return
+        val snapshot = messages
+        withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
     }
 
     /** Downloads the newest messages in the background, so opening them needs no network. */
@@ -270,10 +320,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                     withContext(Dispatchers.IO) { details.values.forEach { cache.save(f, it) } }
                     applyPreviews(f, details.mapValues { it.value.preview })
                 }
-                if (folder == f) {
-                    val snapshot = messages
-                    withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
-                }
+                persistList(f)
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
@@ -306,12 +353,37 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         if (messages.none { it.uid == uid && !it.seen }) return
         messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
         folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
-        val snapshot = messages
         viewModelScope.launch {
-            runCatching { mail.markSeen(a, f, uid) }
-            withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
+            runCatching { mail.setFlag(a, f, uid, "\\Seen", true) }
+            persistList(f)
         }
     }
+
+    fun markUnread(uid: Long) {
+        val a = account ?: return
+        val f = folder
+        messages = messages.map { if (it.uid == uid) it.copy(seen = false) else it }
+        folders = folders.map { if (it.fullName == f && it.role == "inbox") it.copy(unread = it.unread + 1) else it }
+        screen = Screen.Mailbox
+        launchTask {
+            mail.setFlag(a, f, uid, "\\Seen", false)
+            persistList(f)
+        }
+    }
+
+    fun toggleStar(uid: Long) {
+        val a = account ?: return
+        val f = folder
+        val on = messages.firstOrNull { it.uid == uid }?.flagged != true
+        val flip = { value: Boolean -> messages = messages.map { if (it.uid == uid) it.copy(flagged = value) else it } }
+        flip(on)
+        launchTask(onError = { flip(!on) }) {
+            mail.setFlag(a, f, uid, "\\Flagged", on)
+            persistList(f)
+        }
+    }
+
+    fun isStarred(uid: Long): Boolean = messages.firstOrNull { it.uid == uid }?.flagged == true
 
     fun openAttachment(m: MessageDetail, attachment: ReceivedAttachment) {
         val a = account ?: return
@@ -326,19 +398,55 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    /** Removes the message from the list right away; puts it back if the server refuses. */
+    /** Archive is offered in the inbox when the account has an Archive (or Gmail All Mail) folder. */
+    val canArchive: Boolean
+        get() = folders.firstOrNull { it.fullName == folder }?.role == "inbox" &&
+            folders.any { it.role == "archive" || it.role == "all" }
+
+    fun archive(uid: Long) {
+        val a = account ?: return
+        val f = folder
+        stage(uid, "Archived") { mail.archive(a, f, uid) }
+    }
+
     fun delete(uid: Long) {
         val a = account ?: return
         val f = folder
+        stage(uid, "Deleted") { mail.delete(a, f, uid) }
+    }
+
+    /**
+     * Removes the message from the list right away and offers Undo, like Gmail. The server change
+     * runs when the snackbar times out, another change replaces it, or the app leaves the screen.
+     */
+    private fun stage(uid: Long, text: String, change: suspend () -> Unit) {
+        if (messages.none { it.uid == uid }) return
+        commitPendingChange()
+        val f = folder
         val before = messages
         messages = messages.filterNot { it.uid == uid }
-        screen = Screen.Mailbox
-        notice = "Message deleted"
-        val snapshot = messages
-        launchTask(onError = { if (folder == f) messages = before }) {
-            mail.delete(a, f, uid)
-            withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
-        }
+        if (screen is Screen.Reader) screen = Screen.Mailbox
+        pendingChange = PendingChange(
+            run = {
+                change()
+                persistList(f)
+            },
+            restore = { if (folder == f) messages = before },
+        )
+        undoOffer = UndoOffer(text, System.nanoTime())
+    }
+
+    fun undoPendingChange() {
+        pendingChange?.restore?.invoke()
+        pendingChange = null
+        undoOffer = null
+    }
+
+    fun commitPendingChange() {
+        val change = pendingChange ?: return
+        pendingChange = null
+        undoOffer = null
+        launchTask(onError = change.restore) { change.run() }
     }
 
     /** Status line for the new-mail check, shown in the folder menu. */

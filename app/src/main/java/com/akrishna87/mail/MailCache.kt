@@ -62,6 +62,7 @@ class MailCache(context: Context) {
                 subject = o.getString("subject"),
                 date = o.optLong("date").takeIf { it > 0 }?.let(::Date),
                 seen = o.getBoolean("seen"),
+                flagged = o.optBoolean("flagged"),
                 size = o.optInt("size"),
                 preview = o.optString("preview").ifEmpty { null },
             )
@@ -74,7 +75,7 @@ class MailCache(context: Context) {
             a.put(
                 JSONObject()
                     .put("uid", it.uid).put("from", it.from).put("subject", it.subject)
-                    .put("date", it.date?.time ?: 0).put("seen", it.seen).put("size", it.size)
+                    .put("date", it.date?.time ?: 0).put("seen", it.seen).put("flagged", it.flagged).put("size", it.size)
                     .put("preview", it.preview ?: ""),
             )
         }

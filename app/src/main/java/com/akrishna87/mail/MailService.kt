@@ -34,6 +34,10 @@ import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
 import javax.mail.internet.MimeMultipart
 import javax.mail.internet.MimeUtility
+import javax.mail.search.BodyTerm
+import javax.mail.search.FromStringTerm
+import javax.mail.search.OrTerm
+import javax.mail.search.SubjectTerm
 import javax.mail.util.ByteArrayDataSource
 
 data class MailFolder(val fullName: String, val name: String, val role: String?, val unread: Int)
@@ -44,6 +48,7 @@ data class MessageSummary(
     val subject: String,
     val date: Date?,
     val seen: Boolean,
+    val flagged: Boolean = false,
     val size: Int = 0,
     val preview: String? = null,
 )
@@ -72,6 +77,7 @@ data class ReceivedAttachment(val index: Int, val name: String, val size: Int, v
 data class Draft(
     val to: String = "",
     val cc: String = "",
+    val bcc: String = "",
     val subject: String = "",
     val body: String = "",
     val inReplyTo: String? = null,
@@ -227,6 +233,20 @@ class MailService(private val context: Context, private val store: AccountStore)
         Page(msgs.reversed().map { summarize(f, it) }, start > 1)
     }
 
+    /** Server-side search of [folderName] by sender, subject or text; newest results first. */
+    suspend fun search(account: Account, folderName: String, query: String): List<MessageSummary> = imap(account) { s ->
+        val f = selected(s, folderName)
+        val found = f.search(OrTerm(arrayOf(FromStringTerm(query), SubjectTerm(query), BodyTerm(query))))
+        val msgs = found.takeLast(PAGE_SIZE).toTypedArray()
+        val profile = FetchProfile().apply {
+            add(FetchProfile.Item.ENVELOPE)
+            add(FetchProfile.Item.FLAGS)
+            add(UIDFolder.FetchProfileItem.UID)
+        }
+        f.fetch(msgs, profile)
+        msgs.reversed().map { summarize(f, it) }
+    }
+
     /** Downloads one message without marking it read. */
     suspend fun message(account: Account, folderName: String, uid: Long): MessageDetail =
         prefetch(account, folderName, listOf(uid))[uid] ?: throw MessagingException("This message no longer exists")
@@ -239,10 +259,11 @@ class MailService(private val context: Context, private val store: AccountStore)
             raw.mapValues { (uid, bytes) -> parse(uid, MimeMessage(session, bytes.inputStream())) }
         }
 
-    suspend fun markSeen(account: Account, folderName: String, uid: Long) = imap(account) { s ->
+    /** Sets or clears an IMAP system flag, such as Seen (read) or Flagged (starred), with one command. */
+    suspend fun setFlag(account: Account, folderName: String, uid: Long, flag: String, on: Boolean) = imap(account) { s ->
         val f = selected(s, folderName)
         f.doCommand { p ->
-            val r = p.command("UID STORE $uid +FLAGS.SILENT (\\Seen)", null)
+            val r = p.command("UID STORE $uid ${if (on) "+" else "-"}FLAGS.SILENT ($flag)", null)
             p.notifyResponseHandlers(r.copyOfRange(0, r.size - 1))
             p.handleResult(r.last())
             null
@@ -287,6 +308,7 @@ class MailService(private val context: Context, private val store: AccountStore)
             msg.setFrom(InternetAddress(account.email, account.name.ifBlank { null }, "UTF-8"))
             msg.setRecipients(Message.RecipientType.TO, parseAddresses(draft.to))
             if (draft.cc.isNotBlank()) msg.setRecipients(Message.RecipientType.CC, parseAddresses(draft.cc))
+            if (draft.bcc.isNotBlank()) msg.setRecipients(Message.RecipientType.BCC, parseAddresses(draft.bcc))
             msg.setSubject(draft.subject, "UTF-8")
             if (draft.attachments.isEmpty()) {
                 msg.setText(draft.body, "UTF-8")
@@ -315,7 +337,7 @@ class MailService(private val context: Context, private val store: AccountStore)
         if (account.provider == Provider.YAHOO) {
             runCatching {
                 imap(account) { s ->
-                    trashOrSent(s, "sent")?.let { sent ->
+                    folderWithRole(s, "sent")?.let { sent ->
                         msg.setFlag(Flags.Flag.SEEN, true)
                         sent.appendMessages(arrayOf(msg))
                     }
@@ -326,20 +348,33 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     /** Moves the message to Trash, or deletes it permanently when already in Trash. */
     suspend fun delete(account: Account, folderName: String, uid: Long) = imap(account) { s ->
-        val trash = trashOrSent(s, "trash")
+        val trash = folderWithRole(s, "trash")
         val f = selected(s, folderName)
         val m = f.getMessageByUID(uid) ?: return@imap
         if (trash != null && trash.fullName != f.fullName) {
-            if (s.hasCapability("MOVE")) {
-                f.moveMessages(arrayOf(m), trash)
-            } else {
-                f.copyMessages(arrayOf(m), trash)
-                m.setFlag(Flags.Flag.DELETED, true)
-                f.expunge()
-            }
+            move(s, f, m, trash)
         } else {
             m.setFlag(Flags.Flag.DELETED, true)
             f.expunge()
+        }
+    }
+
+    /** Moves the message out of the inbox: to Archive, or for Gmail to All Mail (removing the Inbox label). */
+    suspend fun archive(account: Account, folderName: String, uid: Long) = imap(account) { s ->
+        val target = folderWithRole(s, "archive") ?: folderWithRole(s, "all")
+            ?: throw MessagingException("This account has no Archive folder")
+        val f = selected(s, folderName)
+        val m = f.getMessageByUID(uid) ?: return@imap
+        move(s, f, m, target)
+    }
+
+    private fun move(s: IMAPStore, from: IMAPFolder, m: Message, to: Folder) {
+        if (s.hasCapability("MOVE")) {
+            from.moveMessages(arrayOf(m), to)
+        } else {
+            from.copyMessages(arrayOf(m), to)
+            m.setFlag(Flags.Flag.DELETED, true)
+            from.expunge()
         }
     }
 
@@ -449,11 +484,12 @@ class MailService(private val context: Context, private val store: AccountStore)
             subject = m.subject ?: "(no subject)",
             date = m.sentDate ?: m.receivedDate,
             seen = m.isSet(Flags.Flag.SEEN),
+            flagged = m.isSet(Flags.Flag.FLAGGED),
             size = m.size,
         )
     }
 
-    private fun trashOrSent(s: IMAPStore, role: String): IMAPFolder? {
+    private fun folderWithRole(s: IMAPStore, role: String): IMAPFolder? {
         roles[role]?.let { return s.getFolder(it) as IMAPFolder }
         return s.defaultFolder.list("*").map { it as IMAPFolder }.firstOrNull { role(it) == role }
     }

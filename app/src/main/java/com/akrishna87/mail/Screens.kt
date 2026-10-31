@@ -14,13 +14,15 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
-import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
@@ -29,11 +31,16 @@ import androidx.compose.foundation.layout.imePadding
 import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
+import androidx.compose.foundation.text.KeyboardActions
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
@@ -42,11 +49,14 @@ import androidx.compose.material.icons.automirrored.filled.Send
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
+import androidx.compose.material.icons.filled.KeyboardArrowDown
+import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
-import androidx.compose.material.icons.filled.Refresh
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
+import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.HorizontalDivider
@@ -57,20 +67,26 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
 import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
+import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
 import androidx.compose.material3.SnackbarHostState
+import androidx.compose.material3.SnackbarResult
+import androidx.compose.material3.SwipeToDismissBox
+import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
-import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.rememberDrawerState
+import androidx.compose.material3.rememberSwipeToDismissBoxState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
@@ -82,13 +98,20 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
+import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.graphics.vector.rememberVectorPainter
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.viewinterop.AndroidView
 import kotlinx.coroutines.launch
@@ -101,6 +124,14 @@ fun MailApp(vm: MailViewModel) {
         vm.notice?.let {
             snackbar.showSnackbar(it)
             vm.notice = null
+        }
+    }
+    // Archive and delete wait for the Undo snackbar before they reach the server, like Gmail.
+    LaunchedEffect(vm.undoOffer) {
+        val offer = vm.undoOffer ?: return@LaunchedEffect
+        val result = snackbar.showSnackbar(offer.text, actionLabel = "Undo", duration = SnackbarDuration.Short)
+        if (vm.undoOffer == offer) {
+            if (result == SnackbarResult.ActionPerformed) vm.undoPendingChange() else vm.commitPendingChange()
         }
     }
     val context = LocalContext.current
@@ -230,60 +261,35 @@ private fun LoginScreen(vm: MailViewModel, provider: Provider, snackbar: Snackba
 private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
-    var confirmSignOut by remember { mutableStateOf(false) }
+    val listState = rememberLazyListState()
+    val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
+    var showAccount by remember { mutableStateOf(false) }
     val current = vm.folders.firstOrNull { it.fullName == vm.folder }
+
+    BackHandler(enabled = vm.searchQuery != null) { vm.clearSearch() }
 
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
-            ModalDrawerSheet {
-                Column(Modifier.verticalScroll(rememberScrollState()).padding(12.dp)) {
-                    Text(vm.account?.email.orEmpty(), Modifier.padding(12.dp), style = MaterialTheme.typography.titleSmall)
-                    val status = remember(drawer.isOpen) { vm.newMailStatus() }
-                    Text(
-                        status,
-                        Modifier.padding(start = 12.dp, end = 12.dp, bottom = 12.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    HorizontalDivider()
-                    vm.folders.forEach { f ->
-                        NavigationDrawerItem(
-                            label = { Text(folderLabel(f)) },
-                            badge = { if (f.unread > 0) Text(f.unread.toString()) },
-                            selected = f.fullName == vm.folder,
-                            onClick = {
-                                scope.launch { drawer.close() }
-                                vm.selectFolder(f.fullName)
-                            },
-                        )
-                    }
-                    HorizontalDivider()
-                    NavigationDrawerItem(
-                        label = { Text("Sign out") },
-                        selected = false,
-                        onClick = { confirmSignOut = true },
-                    )
-                }
+            FolderDrawer(vm) { f ->
+                scope.launch { drawer.close() }
+                vm.selectFolder(f.fullName)
             }
         },
     ) {
         Scaffold(
             topBar = {
-                TopAppBar(
-                    title = { Text(current?.let { folderLabel(it) } ?: "Inbox") },
-                    navigationIcon = {
-                        IconButton(onClick = { scope.launch { drawer.open() } }) {
-                            Icon(Icons.Default.Menu, contentDescription = "Folders")
-                        }
-                    },
-                    actions = {
-                        IconButton(onClick = vm::refresh) { Icon(Icons.Default.Refresh, contentDescription = "Refresh") }
-                    },
+                SearchBar(
+                    vm = vm,
+                    onMenu = { scope.launch { drawer.open() } },
+                    onAccount = { showAccount = true },
                 )
             },
             floatingActionButton = {
+                // Like Gmail, the button shrinks to just the pencil once you scroll.
                 ExtendedFloatingActionButton(
                     onClick = { vm.compose() },
+                    expanded = atTop,
                     icon = { Icon(Icons.Default.Edit, contentDescription = null) },
                     text = { Text("Compose") },
                 )
@@ -295,9 +301,17 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 onRefresh = vm::refresh,
                 modifier = Modifier.padding(pad).fillMaxSize(),
             ) {
-                LazyColumn(Modifier.fillMaxSize()) {
+                LazyColumn(Modifier.fillMaxSize(), state = listState) {
+                    item {
+                        Text(
+                            vm.searchQuery?.let { "Results for \u201C$it\u201D" } ?: current?.let { folderLabel(it) } ?: "Inbox",
+                            Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
                     items(vm.messages, key = { it.uid }) { m ->
-                        MessageRow(m) { vm.open(m.uid) }
+                        SwipeableRow(vm, m)
                     }
                     if (vm.hasMore) {
                         item {
@@ -307,23 +321,107 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                         }
                     }
                     if (vm.messages.isEmpty() && !vm.loading) {
-                        item { Text("No messages", Modifier.padding(24.dp)) }
+                        item {
+                            Text(
+                                if (vm.searchQuery != null) "No results" else "Nothing in ${current?.let { folderLabel(it) } ?: "this folder"}",
+                                Modifier.fillMaxWidth().padding(48.dp),
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            )
+                        }
                     }
-                    item { Spacer(Modifier.height(88.dp)) } // Room above the Compose button.
+                    item { Spacer(Modifier.height(96.dp)) } // Room above the Compose button.
                 }
                 if (vm.loading && !vm.refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
         }
     }
 
+    if (showAccount) AccountDialog(vm, onDismiss = { showAccount = false })
+}
+
+/** Gmail's rounded "Search in mail" bar, with the folder menu and account avatar inside it. */
+@Composable
+private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onAccount: () -> Unit) {
+    var query by rememberSaveable { mutableStateOf(vm.searchQuery.orEmpty()) }
+    val focus = LocalFocusManager.current
+    LaunchedEffect(vm.searchQuery) { if (vm.searchQuery == null) query = "" }
+
+    Row(
+        Modifier
+            .statusBarsPadding()
+            .padding(horizontal = 16.dp, vertical = 8.dp)
+            .fillMaxWidth()
+            .height(56.dp)
+            .clip(RoundedCornerShape(28.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 4.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        if (vm.searchQuery != null) {
+            IconButton(onClick = vm::clearSearch) {
+                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
+            }
+        } else {
+            IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, contentDescription = "Folders") }
+        }
+        BasicTextField(
+            value = query,
+            onValueChange = { query = it },
+            modifier = Modifier.weight(1f),
+            singleLine = true,
+            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+            keyboardActions = KeyboardActions(onSearch = {
+                vm.search(query)
+                focus.clearFocus()
+            }),
+            decorationBox = { field ->
+                Box(contentAlignment = Alignment.CenterStart) {
+                    if (query.isEmpty()) {
+                        Text("Search in mail", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    }
+                    field()
+                }
+            },
+        )
+        if (query.isNotEmpty()) {
+            IconButton(onClick = {
+                query = ""
+                vm.clearSearch()
+            }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+        }
+        Box(Modifier.padding(horizontal = 8.dp).clip(CircleShape).clickable(onClick = onAccount)) {
+            Avatar(vm.account?.name?.ifBlank { null } ?: vm.account?.email.orEmpty(), size = 32.dp)
+        }
+    }
+}
+
+@Composable
+private fun AccountDialog(vm: MailViewModel, onDismiss: () -> Unit) {
+    var confirmSignOut by remember { mutableStateOf(false) }
+    val status = remember { vm.newMailStatus() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(vm.account?.name?.ifBlank { null } ?: "Account") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                Text(vm.account?.email.orEmpty())
+                Text(status, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Close") } },
+        dismissButton = { TextButton(onClick = { confirmSignOut = true }) { Text("Sign out") } },
+    )
     if (confirmSignOut) {
         AlertDialog(
             onDismissRequest = { confirmSignOut = false },
             title = { Text("Sign out?") },
-            text = { Text("This removes the account from this phone.") },
+            text = { Text("This removes the account and its saved mail from this phone.") },
             confirmButton = {
                 TextButton(onClick = {
                     confirmSignOut = false
+                    onDismiss()
                     vm.signOut()
                 }) { Text("Sign out") }
             },
@@ -333,64 +431,41 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
 }
 
 @Composable
-private fun MessageRow(m: MessageSummary, onClick: () -> Unit) {
-    val context = LocalContext.current
-    val weight = if (m.seen) FontWeight.Normal else FontWeight.Bold
-    Row(
-        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 16.dp, vertical = 10.dp),
-    ) {
-        Avatar(m.from)
-        Spacer(Modifier.width(12.dp))
-        Column(Modifier.weight(1f)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Text(m.from, Modifier.weight(1f), fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
-                Text(
-                    m.date?.let { shortDate(context, it.time) }.orEmpty(),
-                    style = MaterialTheme.typography.bodySmall,
-                    fontWeight = weight,
-                    modifier = Modifier.padding(start = 8.dp),
+private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit) {
+    ModalDrawerSheet {
+        Column(Modifier.verticalScroll(rememberScrollState())) {
+            Text(
+                "Mailroom",
+                Modifier.padding(start = 28.dp, top = 24.dp, bottom = 16.dp),
+                style = MaterialTheme.typography.titleLarge,
+                color = Color(0xFFD93025),
+            )
+            vm.folders.forEach { f ->
+                NavigationDrawerItem(
+                    icon = { Icon(folderIcon(f), contentDescription = null) },
+                    label = { Text(folderLabel(f)) },
+                    badge = { if (f.unread > 0) Text(f.unread.toString()) },
+                    selected = f.fullName == vm.folder && vm.searchQuery == null,
+                    onClick = { onSelect(f) },
+                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
             }
-            Text(m.subject, fontWeight = weight, maxLines = 1, overflow = TextOverflow.Ellipsis)
-            m.preview?.let {
-                Text(
-                    it,
-                    style = MaterialTheme.typography.bodyMedium,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-            }
+            Spacer(Modifier.height(16.dp))
         }
     }
 }
 
-/** A coloured circle with the sender's first letter, like Gmail. */
 @Composable
-private fun Avatar(name: String) {
-    val letter = name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar() ?: '?'
-    val color = AVATAR_COLORS[(name.lowercase().hashCode() and Int.MAX_VALUE) % AVATAR_COLORS.size]
-    Box(Modifier.size(40.dp).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
-        Text(letter.toString(), color = Color.White, fontWeight = FontWeight.Bold)
-    }
-}
-
-private val AVATAR_COLORS = listOf(
-    Color(0xFF1A73E8), Color(0xFFD93025), Color(0xFF188038), Color(0xFFE37400),
-    Color(0xFF9334E6), Color(0xFF007B83), Color(0xFFC5221F), Color(0xFF5F6368),
-)
-
-/** "Name <address>" -> "Name"; a bare address stays as is. */
-private fun displayName(address: String): String =
-    address.substringBefore(" <").trim().trim('"').ifEmpty { address }
-
-/** Time for today, "Oct 26" for this year, otherwise the full date. */
-private fun shortDate(context: Context, millis: Long): String = when {
-    DateUtils.isToday(millis) -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_TIME)
-    Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.YEAR) ==
-        Calendar.getInstance().get(Calendar.YEAR) ->
-        DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH or DateUtils.FORMAT_NO_YEAR)
-    else -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NUMERIC_DATE)
+private fun folderIcon(f: MailFolder): Painter = when (f.role) {
+    "inbox" -> painterResource(R.drawable.ic_inbox)
+    "starred" -> painterResource(R.drawable.ic_star_border)
+    "sent" -> rememberVectorPainter(Icons.AutoMirrored.Filled.Send)
+    "drafts" -> painterResource(R.drawable.ic_drafts)
+    "all" -> painterResource(R.drawable.ic_mark_unread)
+    "archive" -> painterResource(R.drawable.ic_archive)
+    "spam" -> painterResource(R.drawable.ic_report)
+    "trash" -> rememberVectorPainter(Icons.Default.Delete)
+    else -> painterResource(R.drawable.ic_label)
 }
 
 private fun folderLabel(f: MailFolder): String = when (f.role) {
@@ -400,9 +475,114 @@ private fun folderLabel(f: MailFolder): String = when (f.role) {
     "trash" -> "Trash"
     "spam" -> "Spam"
     "archive" -> "Archive"
-    "all" -> "All Mail"
+    "all" -> "All mail"
     "starred" -> "Starred"
     else -> f.name
+}
+
+/** Swipe either way to archive (in the inbox) or delete, with Undo. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
+    val archive = vm.canArchive
+    val state = rememberSwipeToDismissBoxState(
+        confirmValueChange = { value ->
+            if (value == SwipeToDismissBoxValue.Settled) return@rememberSwipeToDismissBoxState false
+            if (archive) vm.archive(m.uid) else vm.delete(m.uid)
+            true
+        },
+    )
+    SwipeToDismissBox(
+        state = state,
+        backgroundContent = {
+            val toEnd = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
+            Box(
+                Modifier.fillMaxSize().background(if (archive) Color(0xFF188038) else Color(0xFFD93025)).padding(horizontal = 24.dp),
+                contentAlignment = if (toEnd) Alignment.CenterStart else Alignment.CenterEnd,
+            ) {
+                Icon(
+                    if (archive) painterResource(R.drawable.ic_archive) else rememberVectorPainter(Icons.Default.Delete),
+                    contentDescription = null,
+                    tint = Color.White,
+                )
+            }
+        },
+    ) {
+        MessageRow(m, onClick = { vm.open(m.uid) }, onStar = { vm.toggleStar(m.uid) })
+    }
+}
+
+@Composable
+private fun MessageRow(m: MessageSummary, onClick: () -> Unit, onStar: () -> Unit) {
+    val context = LocalContext.current
+    val unread = !m.seen
+    val weight = if (unread) FontWeight.Bold else FontWeight.Normal
+    val strong = MaterialTheme.colorScheme.onSurface
+    val soft = MaterialTheme.colorScheme.onSurfaceVariant
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .background(MaterialTheme.colorScheme.surface)
+            .clickable(onClick = onClick)
+            .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
+    ) {
+        Avatar(m.from)
+        Spacer(Modifier.width(16.dp))
+        Column(Modifier.weight(1f)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text(
+                    m.from,
+                    Modifier.weight(1f),
+                    style = MaterialTheme.typography.bodyLarge,
+                    fontWeight = weight,
+                    color = if (unread) strong else soft,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+                Text(
+                    m.date?.let { shortDate(context, it.time) }.orEmpty(),
+                    Modifier.padding(start = 8.dp, end = 8.dp),
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = weight,
+                    color = if (unread) strong else soft,
+                )
+            }
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        m.subject,
+                        style = MaterialTheme.typography.bodyMedium,
+                        fontWeight = weight,
+                        color = if (unread) strong else soft,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        m.preview.orEmpty(),
+                        style = MaterialTheme.typography.bodyMedium,
+                        color = soft,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+                StarButton(m.flagged, onStar)
+            }
+        }
+    }
+}
+
+@Composable
+private fun StarButton(starred: Boolean, onClick: () -> Unit) {
+    Box(
+        Modifier.size(40.dp).clip(CircleShape).clickable(onClick = onClick),
+        contentAlignment = Alignment.Center,
+    ) {
+        if (starred) {
+            Icon(Icons.Default.Star, contentDescription = "Starred", tint = Color(0xFFF4B400))
+        } else {
+            Icon(painterResource(R.drawable.ic_star_border), contentDescription = "Not starred", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
 }
 
 // --- Reader -------------------------------------------------------------------------------------
@@ -410,7 +590,6 @@ private fun folderLabel(f: MailFolder): String = when (f.role) {
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostState) {
-    var confirmDelete by remember { mutableStateOf(false) }
     var scrolled by remember(uid) { mutableStateOf(false) }
     val m = vm.message
 
@@ -420,8 +599,14 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                 title = {},
                 navigationIcon = { BackButton(vm::back) },
                 actions = {
-                    IconButton(onClick = { confirmDelete = true }, enabled = m != null) {
-                        Icon(Icons.Default.Delete, contentDescription = "Delete")
+                    if (vm.canArchive) {
+                        IconButton(onClick = { vm.archive(uid) }) {
+                            Icon(painterResource(R.drawable.ic_archive), contentDescription = "Archive")
+                        }
+                    }
+                    IconButton(onClick = { vm.delete(uid) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+                    IconButton(onClick = { vm.markUnread(uid) }) {
+                        Icon(painterResource(R.drawable.ic_mark_unread), contentDescription = "Mark unread")
                     }
                 },
             )
@@ -429,12 +614,12 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
         bottomBar = {
             if (m != null) {
                 Row(
-                    Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 12.dp, vertical = 8.dp),
+                    Modifier.fillMaxWidth().navigationBarsPadding().padding(horizontal = 16.dp, vertical = 8.dp),
                     horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
-                    OutlinedButton(onClick = { vm.reply(m, all = false) }, Modifier.weight(1f)) { Text("Reply") }
-                    OutlinedButton(onClick = { vm.reply(m, all = true) }, Modifier.weight(1f)) { Text("Reply all") }
-                    OutlinedButton(onClick = { vm.forward(m) }, Modifier.weight(1f)) { Text("Forward") }
+                    PillButton(R.drawable.ic_reply, "Reply", Modifier.weight(1f)) { vm.reply(m, all = false) }
+                    PillButton(R.drawable.ic_reply_all, "Reply all", Modifier.weight(1.2f)) { vm.reply(m, all = true) }
+                    PillButton(R.drawable.ic_forward, "Forward", Modifier.weight(1.1f)) { vm.forward(m) }
                 }
             }
         },
@@ -445,41 +630,69 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                 if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
                 return@Column
             }
-            Text(
-                m.subject,
-                Modifier.padding(horizontal = 16.dp, vertical = 4.dp),
-                style = MaterialTheme.typography.titleLarge,
-                maxLines = if (scrolled) 1 else 4,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.Top) {
+                Column(Modifier.weight(1f).padding(top = 6.dp)) {
+                    Text(
+                        m.subject,
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = if (scrolled) 1 else 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    vm.folders.firstOrNull { it.fullName == vm.folder }?.let { FolderTag(folderLabel(it)) }
+                }
+                StarButton(vm.isStarred(uid)) { vm.toggleStar(uid) }
+            }
             // The sender details fold away while reading, leaving more room for the message.
             AnimatedVisibility(visible = !scrolled) {
-                MessageHeader(m, onAttachment = { vm.openAttachment(m, it) })
+                SenderHeader(
+                    m,
+                    me = vm.account?.email.orEmpty(),
+                    onReply = { vm.reply(m, all = false) },
+                    onAttachment = { vm.openAttachment(m, it) },
+                )
             }
-            HorizontalDivider()
             key(uid) { EmailBody(m, onScrolled = { scrolled = it }) }
         }
-    }
-
-    if (confirmDelete) {
-        AlertDialog(
-            onDismissRequest = { confirmDelete = false },
-            title = { Text("Delete this message?") },
-            confirmButton = {
-                TextButton(onClick = {
-                    confirmDelete = false
-                    vm.delete(uid)
-                }) { Text("Delete") }
-            },
-            dismissButton = { TextButton(onClick = { confirmDelete = false }) { Text("Cancel") } },
-        )
     }
 }
 
 @Composable
-private fun MessageHeader(m: MessageDetail, onAttachment: (ReceivedAttachment) -> Unit) {
+private fun FolderTag(label: String) {
+    Text(
+        label,
+        Modifier
+            .padding(top = 6.dp)
+            .clip(RoundedCornerShape(4.dp))
+            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .padding(horizontal = 6.dp, vertical = 2.dp),
+        style = MaterialTheme.typography.labelMedium,
+        color = MaterialTheme.colorScheme.onSurfaceVariant,
+    )
+}
+
+@Composable
+private fun PillButton(icon: Int, label: String, modifier: Modifier, onClick: () -> Unit) {
+    OutlinedButton(onClick = onClick, modifier = modifier) {
+        Icon(painterResource(icon), contentDescription = null, Modifier.size(18.dp))
+        Spacer(Modifier.width(6.dp))
+        Text(label, maxLines = 1)
+    }
+}
+
+@Composable
+private fun SenderHeader(
+    m: MessageDetail,
+    me: String,
+    onReply: () -> Unit,
+    onAttachment: (ReceivedAttachment) -> Unit,
+) {
     val context = LocalContext.current
-    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    var expanded by remember(m.uid) { mutableStateOf(false) }
+    val soft = MaterialTheme.colorScheme.onSurfaceVariant
+    val recipients = (m.to + m.cc).joinToString(", ") {
+        if (me.isNotEmpty() && it.contains(me, ignoreCase = true)) "me" else displayName(it)
+    }
+    Column(Modifier.padding(start = 16.dp, end = 4.dp, top = 12.dp, bottom = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
         Row(verticalAlignment = Alignment.CenterVertically) {
             Avatar(displayName(m.from))
             Spacer(Modifier.width(12.dp))
@@ -488,32 +701,55 @@ private fun MessageHeader(m: MessageDetail, onAttachment: (ReceivedAttachment) -
                     Text(
                         displayName(m.from),
                         Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.titleSmall,
                         fontWeight = FontWeight.Bold,
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
                     )
                     m.date?.let {
-                        Text(
-                            "  " + shortDate(context, it.time),
-                            style = MaterialTheme.typography.bodySmall,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
-                        )
+                        Text("  " + shortDate(context, it.time), style = MaterialTheme.typography.labelMedium, color = soft)
                     }
                 }
-                Text(
-                    m.fromAddress,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                Text(
-                    "to " + (m.to + m.cc).joinToString(", ") { displayName(it) },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
+                Row(
+                    Modifier.clip(RoundedCornerShape(4.dp)).clickable { expanded = !expanded },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Text(
+                        "to $recipients",
+                        Modifier.weight(1f, fill = false),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = soft,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Icon(
+                        if (expanded) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (expanded) "Hide details" else "Show details",
+                        tint = soft,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            }
+            IconButton(onClick = onReply) { Icon(painterResource(R.drawable.ic_reply), contentDescription = "Reply") }
+        }
+        if (expanded) {
+            Column(
+                Modifier
+                    .fillMaxWidth()
+                    .padding(end = 12.dp)
+                    .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                    .padding(12.dp),
+                verticalArrangement = Arrangement.spacedBy(4.dp),
+            ) {
+                DetailLine("From", m.from)
+                DetailLine("To", m.to.joinToString(", "))
+                if (m.cc.isNotEmpty()) DetailLine("Cc", m.cc.joinToString(", "))
+                m.date?.let {
+                    DetailLine(
+                        "Date",
+                        DateUtils.formatDateTime(context, it.time, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_SHOW_YEAR),
+                    )
+                }
             }
         }
         if (m.attachments.isNotEmpty()) {
@@ -521,9 +757,10 @@ private fun MessageHeader(m: MessageDetail, onAttachment: (ReceivedAttachment) -
                 m.attachments.forEach { a ->
                     AssistChip(
                         onClick = { onAttachment(a) },
+                        leadingIcon = { Icon(painterResource(R.drawable.ic_attach), contentDescription = null, Modifier.size(18.dp)) },
                         label = {
                             Text(
-                                "📎 ${a.name} · ${Formatter.formatShortFileSize(context, a.size.toLong())}",
+                                "${a.name} · ${Formatter.formatShortFileSize(context, a.size.toLong())}",
                                 maxLines = 1,
                                 overflow = TextOverflow.Ellipsis,
                             )
@@ -532,6 +769,14 @@ private fun MessageHeader(m: MessageDetail, onAttachment: (ReceivedAttachment) -
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun DetailLine(label: String, value: String) {
+    Row {
+        Text(label, Modifier.width(48.dp), style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        Text(value, style = MaterialTheme.typography.bodySmall)
     }
 }
 
@@ -600,6 +845,34 @@ private fun plainTextToHtml(text: String): String {
     return """<div class="plain">$linked</div>"""
 }
 
+/** A coloured circle with the sender's first letter, like Gmail. */
+@Composable
+private fun Avatar(name: String, size: Dp = 40.dp) {
+    val letter = name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar() ?: '?'
+    val color = AVATAR_COLORS[(name.lowercase().hashCode() and Int.MAX_VALUE) % AVATAR_COLORS.size]
+    Box(Modifier.size(size).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+        Text(letter.toString(), color = Color.White, fontWeight = FontWeight.Bold)
+    }
+}
+
+private val AVATAR_COLORS = listOf(
+    Color(0xFF1A73E8), Color(0xFFD93025), Color(0xFF188038), Color(0xFFE37400),
+    Color(0xFF9334E6), Color(0xFF007B83), Color(0xFFC5221F), Color(0xFF5F6368),
+)
+
+/** "Name <address>" -> "Name"; a bare address stays as is. */
+private fun displayName(address: String): String =
+    address.substringBefore(" <").trim().trim('"').ifEmpty { address }
+
+/** Time for today, "Oct 26" for this year, otherwise the full date. */
+private fun shortDate(context: Context, millis: Long): String = when {
+    DateUtils.isToday(millis) -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_TIME)
+    Calendar.getInstance().apply { timeInMillis = millis }.get(Calendar.YEAR) ==
+        Calendar.getInstance().get(Calendar.YEAR) ->
+        DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_ABBREV_MONTH or DateUtils.FORMAT_NO_YEAR)
+    else -> DateUtils.formatDateTime(context, millis, DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_NUMERIC_DATE)
+}
+
 // --- Compose ------------------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -607,29 +880,27 @@ private fun plainTextToHtml(text: String): String {
 private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHostState) {
     var to by rememberSaveable(draft) { mutableStateOf(draft.to) }
     var cc by rememberSaveable(draft) { mutableStateOf(draft.cc) }
+    var bcc by rememberSaveable(draft) { mutableStateOf(draft.bcc) }
     var subject by rememberSaveable(draft) { mutableStateOf(draft.subject) }
     var body by rememberSaveable(draft) { mutableStateOf(draft.body) }
+    var showCc by rememberSaveable(draft) { mutableStateOf(draft.cc.isNotEmpty() || draft.bcc.isNotEmpty()) }
     var attachments by rememberSaveable(draft) { mutableStateOf(ArrayList(draft.attachments)) }
     val context = LocalContext.current
     val pickFiles = rememberLauncherForActivityResult(ActivityResultContracts.GetMultipleContents()) { uris ->
         attachments = ArrayList(attachments + uris.map(vm::describeAttachment))
     }
+    val send = { vm.send(draft.copy(to = to, cc = cc, bcc = bcc, subject = subject, body = body, attachments = attachments)) }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("New message") },
-                navigationIcon = {
-                    IconButton(onClick = vm::back) { Icon(Icons.Default.Close, contentDescription = "Discard") }
-                },
+                title = {},
+                navigationIcon = { BackButton(vm::back) },
                 actions = {
-                    TextButton(onClick = { pickFiles.launch("*/*") }) { Text("Attach") }
-                    IconButton(
-                        onClick = {
-                            vm.send(draft.copy(to = to, cc = cc, subject = subject, body = body, attachments = attachments))
-                        },
-                        enabled = !vm.loading,
-                    ) {
+                    IconButton(onClick = { pickFiles.launch("*/*") }) {
+                        Icon(painterResource(R.drawable.ic_attach), contentDescription = "Attach file")
+                    }
+                    IconButton(onClick = send, enabled = !vm.loading) {
                         Icon(Icons.AutoMirrored.Filled.Send, contentDescription = "Send")
                     }
                 },
@@ -637,19 +908,40 @@ private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHos
         },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
-        Column(
-            Modifier.padding(pad).padding(16.dp).verticalScroll(rememberScrollState()).imePadding(),
-            verticalArrangement = Arrangement.spacedBy(8.dp),
-        ) {
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState()).imePadding()) {
             if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
-            val emailKeyboard = KeyboardOptions(keyboardType = KeyboardType.Email)
-            OutlinedTextField(to, { to = it }, label = { Text("To") }, keyboardOptions = emailKeyboard, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(cc, { cc = it }, label = { Text("Cc") }, keyboardOptions = emailKeyboard, modifier = Modifier.fillMaxWidth())
-            OutlinedTextField(subject, { subject = it }, label = { Text("Subject") }, modifier = Modifier.fillMaxWidth())
+            FieldRow("From") {
+                Text(vm.account?.email.orEmpty(), style = MaterialTheme.typography.bodyLarge, modifier = Modifier.padding(vertical = 4.dp))
+            }
+            FieldRow("To") {
+                PlainField(to, { to = it }, "", Modifier.weight(1f), KeyboardType.Email)
+                IconButton(onClick = { showCc = !showCc }) {
+                    Icon(
+                        if (showCc) Icons.Default.KeyboardArrowUp else Icons.Default.KeyboardArrowDown,
+                        contentDescription = if (showCc) "Hide Cc and Bcc" else "Add Cc and Bcc",
+                    )
+                }
+            }
+            if (showCc) {
+                FieldRow("Cc") { PlainField(cc, { cc = it }, "", Modifier.weight(1f), KeyboardType.Email) }
+                FieldRow("Bcc") { PlainField(bcc, { bcc = it }, "", Modifier.weight(1f), KeyboardType.Email) }
+            }
+            Box(Modifier.padding(horizontal = 16.dp, vertical = 14.dp)) {
+                PlainField(subject, { subject = it }, "Subject", Modifier.fillMaxWidth())
+            }
+            HorizontalDivider()
             attachments.forEach { a ->
-                Row(verticalAlignment = Alignment.CenterVertically) {
+                Row(
+                    Modifier
+                        .padding(start = 16.dp, end = 8.dp, top = 8.dp)
+                        .fillMaxWidth()
+                        .border(1.dp, MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(8.dp))
+                        .padding(start = 12.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Icon(painterResource(R.drawable.ic_attach), contentDescription = null, Modifier.size(18.dp))
                     Text(
-                        "📎 ${a.name} (${Formatter.formatShortFileSize(context, a.size)})",
+                        "  ${a.name} (${Formatter.formatShortFileSize(context, a.size)})",
                         Modifier.weight(1f),
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis,
@@ -659,9 +951,55 @@ private fun ComposeScreen(vm: MailViewModel, draft: Draft, snackbar: SnackbarHos
                     }
                 }
             }
-            OutlinedTextField(body, { body = it }, label = { Text("Message") }, minLines = 10, modifier = Modifier.fillMaxWidth())
+            Box(Modifier.padding(16.dp)) {
+                PlainField(body, { body = it }, "Compose email", Modifier.fillMaxWidth(), singleLine = false, minLines = 12)
+            }
         }
     }
+}
+
+/** A label on the left and the field on the right, with a divider below, like Gmail's compose. */
+@Composable
+private fun FieldRow(label: String, content: @Composable RowScope.() -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp).height(56.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Text(label, Modifier.width(56.dp), style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+        content()
+    }
+    HorizontalDivider()
+}
+
+/** A text field without a box around it. */
+@Composable
+private fun PlainField(
+    value: String,
+    onChange: (String) -> Unit,
+    placeholder: String,
+    modifier: Modifier,
+    keyboardType: KeyboardType = KeyboardType.Text,
+    singleLine: Boolean = true,
+    minLines: Int = 1,
+) {
+    BasicTextField(
+        value = value,
+        onValueChange = onChange,
+        modifier = modifier,
+        singleLine = singleLine,
+        minLines = minLines,
+        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+        keyboardOptions = KeyboardOptions(keyboardType = keyboardType),
+        decorationBox = { field ->
+            Box {
+                if (value.isEmpty() && placeholder.isNotEmpty()) {
+                    Text(placeholder, style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+                field()
+            }
+        },
+    )
 }
 
 @Composable
