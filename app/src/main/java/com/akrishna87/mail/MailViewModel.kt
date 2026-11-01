@@ -148,6 +148,19 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         screen = Screen.Login(provider)
     }
 
+    /** A tapped new-mail notification: show the inbox with the new mail, and open [uid] if given. */
+    fun openFromNotification(uid: Long?) {
+        if (account == null) return
+        if (screen is Screen.Compose) {
+            refresh() // Don't throw away a draft being written; just bring in the new mail.
+            return
+        }
+        if (folder != "INBOX" || searchQuery != null) selectFolder("INBOX")
+        screen = Screen.Mailbox
+        if (System.currentTimeMillis() - lastRefresh > NOTIFICATION_REFRESH_MS) refresh()
+        if (uid != null) open(uid)
+    }
+
     /** Called when the app comes back on screen: checks for new mail and warms up the connection. */
     fun onResume() {
         if (account != null && System.currentTimeMillis() - lastRefresh > RESUME_REFRESH_MS) refresh()
@@ -350,9 +363,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun markRead(a: Account, f: String, uid: Long) {
-        if (messages.none { it.uid == uid && !it.seen }) return
-        messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
-        folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
+        val known = messages.firstOrNull { it.uid == uid }
+        if (known?.seen == true) return
+        // A message opened from a notification may not be in the list yet; still mark it on the server.
+        if (known != null) {
+            messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
+            folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
+        }
         viewModelScope.launch {
             runCatching { mail.setFlag(a, f, uid, "\\Seen", true) }
             persistList(f)
@@ -541,5 +558,6 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         const val PREFETCH_BATCH = 5
         const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.
         const val RESUME_REFRESH_MS = 60 * 1000L
+        const val NOTIFICATION_REFRESH_MS = 5 * 1000L // Skips only the refresh the launch itself just started.
     }
 }

@@ -61,10 +61,15 @@ class NewMailWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         manager.createNotificationChannel(
             NotificationChannel(CHANNEL_ID, "New mail", NotificationManager.IMPORTANCE_DEFAULT),
         )
+        // One new email opens that email; several open the inbox. Either way the inbox refreshes.
+        val tap = Intent(context, MainActivity::class.java)
+            .setAction(ACTION_OPEN_INBOX)
+            .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
+        if (messages.size == 1) tap.putExtra(EXTRA_UID, messages[0].uid)
         val open = PendingIntent.getActivity(
             context,
             0,
-            Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP),
+            tap,
             PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
         )
         val (title, text) = if (messages.size == 1) {
@@ -86,6 +91,8 @@ class NewMailWorker(context: Context, params: WorkerParameters) : CoroutineWorke
         private const val CHANNEL_ID = "new_mail"
         private const val NOTIFICATION_ID = 1
         private const val WORK_NAME = "new-mail-check"
+        const val ACTION_OPEN_INBOX = "com.akrishna87.mail.OPEN_INBOX"
+        const val EXTRA_UID = "uid"
 
         fun schedule(context: Context) {
             val request = PeriodicWorkRequestBuilder<NewMailWorker>(15, TimeUnit.MINUTES)

@@ -1,6 +1,7 @@
 package com.akrishna87.mail
 
 import android.Manifest
+import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
@@ -31,12 +32,25 @@ class MainActivity : ComponentActivity() {
         setContent {
             MailTheme { MailApp(vm) }
         }
+        if (savedInstanceState == null) handleNotificationTap(intent)
         // The first WebView in a process takes a moment to start the browser engine; do it while
         // the app is idle, so the first email opens without that delay.
         Looper.myQueue().addIdleHandler {
             WebView(applicationContext).destroy()
             false
         }
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleNotificationTap(intent)
+    }
+
+    private fun handleNotificationTap(intent: Intent?) {
+        if (intent?.action != NewMailWorker.ACTION_OPEN_INBOX) return
+        val uid = intent.getLongExtra(NewMailWorker.EXTRA_UID, 0L)
+        vm.openFromNotification(uid.takeIf { it > 0 })
+        setIntent(Intent()) // Handle each tap once, not again after rotation.
     }
 
     override fun onResume() {
