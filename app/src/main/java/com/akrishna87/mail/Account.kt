@@ -76,5 +76,10 @@ class AccountStore(context: Context) {
         get() = runCatching { SyncMode.valueOf(prefs.getString("syncMode", null) ?: "") }.getOrDefault(SyncMode.EVERY_15)
         set(value) = prefs.edit().putString("syncMode", value.name).apply()
 
+    /** Recent searches, newest first. */
+    var recentSearches: List<String>
+        get() = prefs.getString("recentSearches", "").orEmpty().split('\n').filter { it.isNotBlank() }
+        set(value) = prefs.edit().putString("recentSearches", value.joinToString("\n")).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

@@ -55,6 +55,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
@@ -63,6 +64,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
@@ -102,6 +104,9 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
@@ -163,6 +168,7 @@ fun MailApp(vm: MailViewModel) {
         is Screen.Reader -> ReaderScreen(vm, s.uid, snackbar)
         is Screen.Compose -> ComposeScreen(vm, s.draft, snackbar)
         Screen.Settings -> SettingsScreen(vm)
+        Screen.Search -> SearchScreen(vm, snackbar)
     }
 }
 
@@ -273,8 +279,6 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     var showAccount by remember { mutableStateOf(false) }
     val current = vm.folders.firstOrNull { it.fullName == vm.folder }
 
-    BackHandler(enabled = vm.searchQuery != null) { vm.clearSearch() }
-
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
@@ -296,6 +300,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 SearchBar(
                     vm = vm,
                     onMenu = { scope.launch { drawer.open() } },
+                    onSearch = vm::openSearch,
                     onAccount = { showAccount = true },
                 )
             },
@@ -318,7 +323,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     item {
                         Text(
-                            vm.searchQuery?.let { "Results for \u201C$it\u201D" } ?: current?.let { folderLabel(it) } ?: "Inbox",
+                            current?.let { folderLabel(it) } ?: "Inbox",
                             Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -337,7 +342,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                     if (vm.messages.isEmpty() && !vm.loading) {
                         item {
                             Text(
-                                if (vm.searchQuery != null) "No results" else "Nothing in ${current?.let { folderLabel(it) } ?: "this folder"}",
+                                "Nothing in ${current?.let { folderLabel(it) } ?: "this folder"}",
                                 Modifier.fillMaxWidth().padding(48.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -355,11 +360,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
 
 /** Gmail's rounded "Search in mail" bar, with the folder menu and account avatar inside it. */
 @Composable
-private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onAccount: () -> Unit) {
-    var query by rememberSaveable { mutableStateOf(vm.searchQuery.orEmpty()) }
-    val focus = LocalFocusManager.current
-    LaunchedEffect(vm.searchQuery) { if (vm.searchQuery == null) query = "" }
-
+private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onSearch: () -> Unit, onAccount: () -> Unit) {
     Row(
         Modifier
             .statusBarsPadding()
@@ -368,43 +369,17 @@ private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onAccount: () -> Un
             .height(56.dp)
             .clip(RoundedCornerShape(28.dp))
             .background(MaterialTheme.colorScheme.surfaceContainerHigh)
+            .clickable(onClick = onSearch)
             .padding(horizontal = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        if (vm.searchQuery != null) {
-            IconButton(onClick = vm::clearSearch) {
-                Icon(Icons.AutoMirrored.Filled.ArrowBack, contentDescription = "Close search")
-            }
-        } else {
-            IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, contentDescription = "Folders") }
-        }
-        BasicTextField(
-            value = query,
-            onValueChange = { query = it },
-            modifier = Modifier.weight(1f),
-            singleLine = true,
-            textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-            cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-            keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-            keyboardActions = KeyboardActions(onSearch = {
-                vm.search(query)
-                focus.clearFocus()
-            }),
-            decorationBox = { field ->
-                Box(contentAlignment = Alignment.CenterStart) {
-                    if (query.isEmpty()) {
-                        Text("Search in mail", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
-                    }
-                    field()
-                }
-            },
+        IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, contentDescription = "Folders") }
+        Text(
+            "Search in mail",
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.bodyLarge,
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (query.isNotEmpty()) {
-            IconButton(onClick = {
-                query = ""
-                vm.clearSearch()
-            }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
-        }
         Box(Modifier.padding(horizontal = 8.dp).clip(CircleShape).clickable(onClick = onAccount)) {
             Avatar(vm.account?.name?.ifBlank { null } ?: vm.account?.email.orEmpty(), size = 32.dp)
         }
@@ -607,6 +582,181 @@ private fun StarButton(starred: Boolean, onClick: () -> Unit) {
     }
 }
 
+// --- Search -------------------------------------------------------------------------------------
+
+/**
+ * Gmail-style search: recent searches and matching senders while typing, then results with
+ * filter chips. On Gmail the text is searched exactly as Gmail would (from:, has:attachment, ...).
+ */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SearchScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
+    var text by rememberSaveable { mutableStateOf(vm.searchQuery.orEmpty()) }
+    var typing by rememberSaveable { mutableStateOf(vm.searchQuery == null) }
+    val focus = remember { FocusRequester() }
+    val focusManager = LocalFocusManager.current
+    val submit = { query: String ->
+        text = query
+        typing = false
+        focusManager.clearFocus()
+        vm.search(query)
+    }
+    LaunchedEffect(vm.searchQuery) { vm.searchQuery?.let { text = it } }
+    LaunchedEffect(Unit) { if (typing) focus.requestFocus() }
+
+    Scaffold(
+        topBar = {
+            Row(
+                Modifier.statusBarsPadding().padding(horizontal = 4.dp, vertical = 8.dp).fillMaxWidth().height(56.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                BackButton(vm::back)
+                BasicTextField(
+                    value = text,
+                    onValueChange = {
+                        text = it
+                        typing = true
+                    },
+                    modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { if (it.isFocused) typing = true },
+                    singleLine = true,
+                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                    keyboardActions = KeyboardActions(onSearch = { if (text.isNotBlank()) submit(text) }),
+                    decorationBox = { field ->
+                        Box(contentAlignment = Alignment.CenterStart) {
+                            if (text.isEmpty()) {
+                                Text("Search in mail", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                            }
+                            field()
+                        }
+                    },
+                )
+                if (text.isNotEmpty()) {
+                    IconButton(onClick = {
+                        text = ""
+                        typing = true
+                        focus.requestFocus()
+                    }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                }
+            }
+        },
+        snackbarHost = { SnackbarHost(snackbar) },
+    ) { pad ->
+        Column(Modifier.padding(pad).fillMaxSize()) {
+            HorizontalDivider()
+            if (typing || vm.searchQuery == null) {
+                SearchSuggestions(vm, text, onPick = submit)
+            } else {
+                SearchResults(vm)
+            }
+        }
+    }
+}
+
+@Composable
+private fun SearchSuggestions(vm: MailViewModel, text: String, onPick: (String) -> Unit) {
+    val typed = text.trim()
+    val recent = vm.recentSearches.filter { typed.isEmpty() || it.contains(typed, ignoreCase = true) }.take(8)
+    val people = if (typed.length < 2) emptyList() else vm.knownSenders.filter { it.contains(typed, ignoreCase = true) }.take(5)
+    LazyColumn(Modifier.fillMaxSize()) {
+        if (typed.isEmpty() && recent.isNotEmpty()) {
+            item {
+                Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 4.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        "Recent searches",
+                        Modifier.weight(1f),
+                        style = MaterialTheme.typography.labelLarge,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    TextButton(onClick = vm::forgetRecentSearches) { Text("Clear") }
+                }
+            }
+        }
+        items(recent) { q ->
+            SuggestionRow(painterResource(R.drawable.ic_history), q) { onPick(q) }
+        }
+        items(people) { name ->
+            Row(
+                Modifier.fillMaxWidth().clickable { onPick("from:\"$name\"") }.padding(horizontal = 16.dp, vertical = 8.dp),
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Avatar(name, size = 32.dp)
+                Spacer(Modifier.width(16.dp))
+                Column {
+                    Text(name, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+                    Text("Mail from this sender", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+        if (typed.isNotEmpty()) {
+            item {
+                SuggestionRow(rememberVectorPainter(Icons.Default.Search), "Search for \u201C$typed\u201D") { onPick(typed) }
+            }
+        }
+        if (typed.isEmpty() && recent.isEmpty()) {
+            item {
+                Text(
+                    "Search by words, or use Gmail searches like from:name, subject:word, has:attachment, " +
+                        "is:unread or older_than:1y.",
+                    Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                )
+            }
+        }
+    }
+}
+
+@Composable
+private fun SuggestionRow(icon: Painter, text: String, onClick: () -> Unit) {
+    Row(
+        Modifier.fillMaxWidth().clickable(onClick = onClick).padding(horizontal = 20.dp, vertical = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(icon, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        Spacer(Modifier.width(20.dp))
+        Text(text, style = MaterialTheme.typography.bodyLarge, maxLines = 1, overflow = TextOverflow.Ellipsis)
+    }
+}
+
+@Composable
+private fun SearchResults(vm: MailViewModel) {
+    val query = vm.searchQuery.orEmpty()
+    Column(Modifier.fillMaxSize()) {
+        Row(
+            Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+        ) {
+            SearchQuery.FILTERS.forEach { (label, operator) ->
+                FilterChip(
+                    selected = SearchQuery.has(query, operator),
+                    onClick = { vm.toggleSearchFilter(operator) },
+                    label = { Text(label) },
+                )
+            }
+        }
+        if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+        LazyColumn(Modifier.fillMaxSize()) {
+            items(vm.messages, key = { it.uid }) { m -> SwipeableRow(vm, m) }
+            if (vm.hasMore) {
+                item {
+                    TextButton(onClick = vm::loadMore, modifier = Modifier.fillMaxWidth()) { Text("More results") }
+                }
+            }
+            if (vm.messages.isEmpty() && !vm.loading) {
+                item {
+                    Text(
+                        "No results for \u201C$query\u201D",
+                        Modifier.fillMaxWidth().padding(48.dp),
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                }
+            }
+        }
+    }
+}
+
 // --- Settings -----------------------------------------------------------------------------------
 
 @OptIn(ExperimentalMaterial3Api::class)
@@ -732,7 +882,7 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                         maxLines = if (scrolled) 1 else 4,
                         overflow = TextOverflow.Ellipsis,
                     )
-                    vm.folders.firstOrNull { it.fullName == vm.folder }?.let { FolderTag(folderLabel(it)) }
+                    vm.folders.firstOrNull { it.fullName == vm.activeFolder }?.let { FolderTag(folderLabel(it)) }
                 }
                 StarButton(vm.isStarred(uid)) { vm.toggleStar(uid) }
             }

@@ -4,10 +4,12 @@ import android.content.Context
 import android.net.Uri
 import android.util.Base64
 import androidx.core.text.HtmlCompat
+import com.sun.mail.iap.Argument
 import com.sun.mail.imap.IMAPFolder
 import com.sun.mail.imap.IMAPStore
 import com.sun.mail.imap.protocol.BODY
 import com.sun.mail.imap.protocol.FetchResponse
+import com.sun.mail.imap.protocol.IMAPResponse
 import com.sun.mail.imap.protocol.UID
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.sync.Mutex
@@ -36,10 +38,6 @@ import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
 import javax.mail.internet.MimeMultipart
 import javax.mail.internet.MimeUtility
-import javax.mail.search.BodyTerm
-import javax.mail.search.FromStringTerm
-import javax.mail.search.OrTerm
-import javax.mail.search.SubjectTerm
 import javax.mail.util.ByteArrayDataSource
 
 data class MailFolder(val fullName: String, val name: String, val role: String?, val unread: Int)
@@ -235,18 +233,51 @@ class MailService(private val context: Context, private val store: AccountStore)
         Page(msgs.reversed().map { summarize(f, it) }, start > 1)
     }
 
-    /** Server-side search of [folderName] by sender, subject or text; newest results first. */
-    suspend fun search(account: Account, folderName: String, query: String): List<MessageSummary> = imap(account) { s ->
+    /**
+     * Searches like Gmail. On Gmail the query goes to Google unchanged (X-GM-RAW), so every Gmail
+     * operator works, and it covers All Mail. Elsewhere [SearchQuery] turns it into an IMAP search
+     * of [folderName]. Returns the folder searched and the matching UIDs, newest first.
+     */
+    suspend fun search(account: Account, folderName: String, query: String): Pair<String, List<Long>> = imap(account) { s ->
+        if (s.hasCapability("X-GM-EXT-1")) {
+            val all = folderWithRole(s, "all")?.fullName ?: folderName
+            all to gmailSearch(selected(s, all), query).sortedDescending()
+        } else {
+            val f = selected(s, folderName)
+            val found = f.search(SearchQuery.toSearchTerm(query))
+            f.fetch(found, FetchProfile().apply { add(UIDFolder.FetchProfileItem.UID) })
+            folderName to found.map { f.getUID(it) }.sortedDescending()
+        }
+    }
+
+    /** List rows for [uids] in [folderName], newest first. */
+    suspend fun summaries(account: Account, folderName: String, uids: List<Long>): List<MessageSummary> = imap(account) { s ->
+        if (uids.isEmpty()) return@imap emptyList()
         val f = selected(s, folderName)
-        val found = f.search(OrTerm(arrayOf(FromStringTerm(query), SubjectTerm(query), BodyTerm(query))))
-        val msgs = found.takeLast(PAGE_SIZE).toTypedArray()
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
         val profile = FetchProfile().apply {
             add(FetchProfile.Item.ENVELOPE)
             add(FetchProfile.Item.FLAGS)
             add(UIDFolder.FetchProfileItem.UID)
         }
         f.fetch(msgs, profile)
-        msgs.reversed().map { summarize(f, it) }
+        msgs.map { summarize(f, it) }.sortedByDescending { it.uid }
+    }
+
+    /** UID SEARCH X-GM-RAW "<query>": Gmail's own search syntax, run by Google. */
+    private fun gmailSearch(f: IMAPFolder, query: String): List<Long> {
+        @Suppress("UNCHECKED_CAST")
+        return f.doCommand { p ->
+            val args = Argument()
+                .writeAtom("CHARSET").writeAtom("UTF-8")
+                .writeAtom("X-GM-RAW").writeString(query, "UTF-8")
+            val r = p.command("UID SEARCH", args)
+            p.notifyResponseHandlers(r.copyOfRange(0, r.size - 1))
+            p.handleResult(r.last())
+            r.filterIsInstance<IMAPResponse>().filter { it.keyEquals("SEARCH") }.flatMap { resp ->
+                generateSequence { resp.readLong().takeIf { it != -1L } }.toList()
+            }
+        } as List<Long>
     }
 
     /** Downloads one message without marking it read. */

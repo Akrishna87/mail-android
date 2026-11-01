@@ -31,6 +31,7 @@ sealed interface Screen {
     data class Reader(val uid: Long) : Screen
     data class Compose(val draft: Draft, val returnTo: Screen) : Screen
     data object Settings : Screen
+    data object Search : Screen
 }
 
 /** A downloaded attachment for the UI to open with another app. */
@@ -83,6 +84,21 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     /** Search shown in place of the folder's messages, or null. */
     var searchQuery by mutableStateOf<String?>(null)
         private set
+
+    /** Recent searches, newest first, shown before typing like Gmail. */
+    var recentSearches by mutableStateOf(store.recentSearches)
+        private set
+
+    /** Senders seen in loaded lists, for search suggestions. */
+    var knownSenders by mutableStateOf(listOf<String>())
+        private set
+
+    // Search results can come from another folder (Gmail searches All Mail), and arrive in pages.
+    private var searchFolder: String? = null
+    private var searchUids: List<Long> = emptyList()
+
+    /** The folder the shown messages belong to. */
+    val activeFolder: String get() = searchFolder ?: folder
 
     private var page = 1
     private var running = 0
@@ -147,10 +163,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     val canGoBack: Boolean get() = screen !is Screen.Setup && screen !is Screen.Mailbox
 
+    /** Where a message opened from a list returns to. */
+    private fun listScreen(): Screen = if (searchQuery != null) Screen.Search else Screen.Mailbox
+
     fun back() {
+        if (screen == Screen.Search) return clearSearch()
         screen = when (val s = screen) {
             is Screen.Login -> Screen.Setup
-            is Screen.Reader -> Screen.Mailbox
+            is Screen.Reader -> listScreen()
             is Screen.Compose -> s.returnTo
             Screen.Settings -> Screen.Mailbox
             else -> s
@@ -251,10 +271,18 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    fun openSearch() {
+        screen = Screen.Search
+    }
+
+    /** Runs a search (Gmail syntax) and shows the results on the search screen. */
     fun search(query: String) {
         val q = query.trim()
-        if (q.isEmpty()) return clearSearch()
+        if (q.isEmpty()) return
         searchQuery = q
+        screen = Screen.Search
+        recentSearches = (listOf(q) + recentSearches.filterNot { it.equals(q, ignoreCase = true) }).take(MAX_RECENT_SEARCHES)
+        store.recentSearches = recentSearches
         prefetchJob?.cancel()
         messages = emptyList()
         hasMore = false
@@ -264,21 +292,51 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
-    private suspend fun runSearch(q: String) {
-        val a = account ?: return
-        val f = folder
-        val found = mail.search(a, f, q)
-        if (searchQuery == q && folder == f) messages = found
+    /** Turns a filter chip (e.g. is:unread) on or off for the current search. */
+    fun toggleSearchFilter(operator: String) {
+        search(SearchQuery.toggle(searchQuery.orEmpty(), operator))
     }
 
+    fun forgetRecentSearches() {
+        recentSearches = emptyList()
+        store.recentSearches = emptyList()
+    }
+
+    private suspend fun runSearch(q: String) {
+        val a = account ?: return
+        val (inFolder, uids) = mail.search(a, folder, q)
+        if (searchQuery != q) return
+        searchFolder = inFolder
+        searchUids = uids
+        val first = mail.summaries(a, inFolder, uids.take(MailService.PAGE_SIZE))
+        if (searchQuery != q) return
+        messages = first
+        hasMore = uids.size > first.size
+    }
+
+    private suspend fun loadMoreSearchResults() {
+        val a = account ?: return
+        val q = searchQuery ?: return
+        val f = searchFolder ?: return
+        val next = searchUids.drop(messages.size).take(MailService.PAGE_SIZE)
+        val more = mail.summaries(a, f, next)
+        if (searchQuery != q) return
+        messages = (messages + more).distinctBy { it.uid }
+        hasMore = searchUids.size > messages.size
+    }
+
+    /** Leaves search and shows the folder again. */
     fun clearSearch() {
-        if (searchQuery == null) return
         searchQuery = null
+        searchFolder = null
+        searchUids = emptyList()
+        screen = Screen.Mailbox
         selectFolder(folder)
     }
 
     fun selectFolder(fullName: String) {
         searchQuery = null
+        searchFolder = null
         folder = fullName
         prefetchJob?.cancel()
         viewModelScope.launch {
@@ -292,7 +350,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun loadMore() = launchTask {
-        if (searchQuery != null) return@launchTask
+        if (searchQuery != null) return@launchTask loadMoreSearchResults()
         page += 1
         loadMessages(reset = false)
     }
@@ -315,6 +373,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         // New mail shifts the pages, so the next page can repeat a message.
         messages = if (reset) fresh else (messages + fresh).distinctBy { it.uid }
         hasMore = result.hasMore
+        knownSenders = (knownSenders + messages.map { it.from }).distinct().take(MAX_KNOWN_SENDERS)
         if (reset) persistList(f)
     }
 
@@ -328,7 +387,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     /** Downloads the newest messages in the background, so opening them needs no network. */
     private fun startPrefetch() {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         prefetchJob?.cancel()
         prefetchJob = viewModelScope.launch {
             try {
@@ -357,7 +416,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun applyPreviews(f: String, previews: Map<Long, String>) {
-        if (previews.isEmpty() || f != folder) return
+        if (previews.isEmpty() || f != activeFolder) return
         messages = messages.map { m -> previews[m.uid]?.let { m.copy(preview = it) } ?: m }
     }
 
@@ -365,7 +424,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun open(uid: Long) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         message = null
         screen = Screen.Reader(uid)
         launchTask {
@@ -392,10 +451,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun markUnread(uid: Long) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         messages = messages.map { if (it.uid == uid) it.copy(seen = false) else it }
         folders = folders.map { if (it.fullName == f && it.role == "inbox") it.copy(unread = it.unread + 1) else it }
-        screen = Screen.Mailbox
+        screen = listScreen()
         launchTask {
             mail.setFlag(a, f, uid, "\\Seen", false)
             persistList(f)
@@ -404,7 +463,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun toggleStar(uid: Long) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         val on = messages.firstOrNull { it.uid == uid }?.flagged != true
         val flip = { value: Boolean -> messages = messages.map { if (it.uid == uid) it.copy(flagged = value) else it } }
         flip(on)
@@ -418,7 +477,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun openAttachment(m: MessageDetail, attachment: ReceivedAttachment) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         notice = "Opening ${attachment.name}…"
         launchTask {
             val app = getApplication<Application>()
@@ -431,18 +490,18 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Archive is offered in the inbox when the account has an Archive (or Gmail All Mail) folder. */
     val canArchive: Boolean
-        get() = folders.firstOrNull { it.fullName == folder }?.role == "inbox" &&
+        get() = folders.firstOrNull { it.fullName == activeFolder }?.role == "inbox" &&
             folders.any { it.role == "archive" || it.role == "all" }
 
     fun archive(uid: Long) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         stage(uid, "Archived") { mail.archive(a, f, uid) }
     }
 
     fun delete(uid: Long) {
         val a = account ?: return
-        val f = folder
+        val f = activeFolder
         stage(uid, "Deleted") { mail.delete(a, f, uid) }
     }
 
@@ -453,16 +512,16 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private fun stage(uid: Long, text: String, change: suspend () -> Unit) {
         if (messages.none { it.uid == uid }) return
         commitPendingChange()
-        val f = folder
+        val f = activeFolder
         val before = messages
         messages = messages.filterNot { it.uid == uid }
-        if (screen is Screen.Reader) screen = Screen.Mailbox
+        if (screen is Screen.Reader) screen = listScreen()
         pendingChange = PendingChange(
             run = {
                 change()
                 persistList(f)
             },
-            restore = { if (folder == f) messages = before },
+            restore = { if (activeFolder == f) messages = before },
         )
         undoOffer = UndoOffer(text, System.nanoTime())
     }
@@ -584,6 +643,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.
         const val RESUME_REFRESH_MS = 60 * 1000L
         const val NOTIFICATION_REFRESH_MS = 5 * 1000L
-        const val LIVE_REFRESH_MS = 5 * 1000L // Skips only the refresh the launch itself just started.
+        const val LIVE_REFRESH_MS = 5 * 1000L
+        const val MAX_RECENT_SEARCHES = 10
+        const val MAX_KNOWN_SENDERS = 500 // Skips only the refresh the launch itself just started.
     }
 }
