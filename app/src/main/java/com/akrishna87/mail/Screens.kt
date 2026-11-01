@@ -3,6 +3,8 @@ package com.akrishna87.mail
 import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
 import android.text.TextUtils
 import android.text.format.DateUtils
 import android.text.format.Formatter
@@ -37,6 +39,7 @@ import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.text.BasicTextField
@@ -52,6 +55,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
@@ -71,6 +75,7 @@ import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarDuration
 import androidx.compose.material3.SnackbarHost
@@ -106,6 +111,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalFocusManager
 import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.ImeAction
 import androidx.compose.ui.text.input.KeyboardType
@@ -156,6 +162,7 @@ fun MailApp(vm: MailViewModel) {
         Screen.Mailbox -> MailboxScreen(vm, snackbar)
         is Screen.Reader -> ReaderScreen(vm, s.uid, snackbar)
         is Screen.Compose -> ComposeScreen(vm, s.draft, snackbar)
+        Screen.Settings -> SettingsScreen(vm)
     }
 }
 
@@ -271,10 +278,17 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     ModalNavigationDrawer(
         drawerState = drawer,
         drawerContent = {
-            FolderDrawer(vm) { f ->
-                scope.launch { drawer.close() }
-                vm.selectFolder(f.fullName)
-            }
+            FolderDrawer(
+                vm,
+                onSelect = { f ->
+                    scope.launch { drawer.close() }
+                    vm.selectFolder(f.fullName)
+                },
+                onSettings = {
+                    scope.launch { drawer.close() }
+                    vm.openSettings()
+                },
+            )
         },
     ) {
         Scaffold(
@@ -431,7 +445,7 @@ private fun AccountDialog(vm: MailViewModel, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit) {
+private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit, onSettings: () -> Unit) {
     ModalDrawerSheet {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
@@ -450,6 +464,14 @@ private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit) {
                     modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
                 )
             }
+            HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 28.dp))
+            NavigationDrawerItem(
+                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                label = { Text("Settings") },
+                selected = false,
+                onClick = onSettings,
+                modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+            )
             Spacer(Modifier.height(16.dp))
         }
     }
@@ -581,6 +603,78 @@ private fun StarButton(starred: Boolean, onClick: () -> Unit) {
             Icon(Icons.Default.Star, contentDescription = "Starred", tint = Color(0xFFF4B400))
         } else {
             Icon(painterResource(R.drawable.ic_star_border), contentDescription = "Not starred", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+    }
+}
+
+// --- Settings -----------------------------------------------------------------------------------
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SettingsScreen(vm: MailViewModel) {
+    val context = LocalContext.current
+    val power = remember { context.getSystemService(PowerManager::class.java) }
+    var unrestricted by remember { mutableStateOf(power.isIgnoringBatteryOptimizations(context.packageName)) }
+    val askBattery = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        unrestricted = power.isIgnoringBatteryOptimizations(context.packageName)
+    }
+    val status = remember(vm.syncMode) { vm.newMailStatus() }
+    val soft = MaterialTheme.colorScheme.onSurfaceVariant
+
+    Scaffold(
+        topBar = { TopAppBar(title = { Text("Settings") }, navigationIcon = { BackButton(vm::back) }) },
+    ) { pad ->
+        Column(Modifier.padding(pad).verticalScroll(rememberScrollState())) {
+            Text(
+                "Check for new mail",
+                Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            SyncMode.entries.forEach { mode ->
+                Row(
+                    Modifier
+                        .fillMaxWidth()
+                        .selectable(selected = vm.syncMode == mode, onClick = { vm.changeSyncMode(mode) }, role = Role.RadioButton)
+                        .padding(horizontal = 16.dp, vertical = 10.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    RadioButton(selected = vm.syncMode == mode, onClick = null)
+                    Spacer(Modifier.width(16.dp))
+                    Column {
+                        Text(mode.label, style = MaterialTheme.typography.bodyLarge)
+                        if (mode.detail.isNotEmpty()) Text(mode.detail, style = MaterialTheme.typography.bodySmall, color = soft)
+                    }
+                }
+            }
+            Text(status, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = soft)
+
+            if (vm.syncMode != SyncMode.MANUAL && !unrestricted) {
+                HorizontalDivider()
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Battery", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+                    Text(
+                        "Android may delay or stop background checks to save battery. For reliable new mail, " +
+                            "let Mailroom run in the background.",
+                        style = MaterialTheme.typography.bodyMedium,
+                    )
+                    Button(onClick = {
+                        askBattery.launch(
+                            Intent(android.provider.Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS)
+                                .setData(Uri.parse("package:${context.packageName}")),
+                        )
+                    }) { Text("Allow background use") }
+                }
+            }
+            if (vm.syncMode == SyncMode.PUSH) {
+                Text(
+                    "Android requires a notification while push is on. To hide it, long-press it and turn off " +
+                        "\u201CPush connection\u201D notifications; push keeps working.",
+                    Modifier.padding(16.dp),
+                    style = MaterialTheme.typography.bodySmall,
+                    color = soft,
+                )
+            }
         }
     }
 }

@@ -30,6 +30,7 @@ sealed interface Screen {
     data object Mailbox : Screen
     data class Reader(val uid: Long) : Screen
     data class Compose(val draft: Draft, val returnTo: Screen) : Screen
+    data object Settings : Screen
 }
 
 /** A downloaded attachment for the UI to open with another app. */
@@ -75,6 +76,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var undoOffer by mutableStateOf<UndoOffer?>(null)
         private set
 
+    /** How often new mail is fetched in the background. */
+    var syncMode by mutableStateOf(store.syncMode)
+        private set
+
     /** Search shown in place of the folder's messages, or null. */
     var searchQuery by mutableStateOf<String?>(null)
         private set
@@ -95,6 +100,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 if (messages.isEmpty()) messages = savedList
                 if (folders.isEmpty()) folders = savedFolders
                 refresh()
+            }
+        }
+        // When background sync or push saves new mail while the app is open, show it.
+        viewModelScope.launch {
+            SyncEvents.inboxChanged.collect {
+                val showingInbox = folder == "INBOX" && searchQuery == null && pendingChange == null
+                if (account != null && showingInbox && System.currentTimeMillis() - lastRefresh > LIVE_REFRESH_MS) refresh()
             }
         }
     }
@@ -140,6 +152,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             is Screen.Login -> Screen.Setup
             is Screen.Reader -> Screen.Mailbox
             is Screen.Compose -> s.returnTo
+            Screen.Settings -> Screen.Mailbox
             else -> s
         }
     }
@@ -198,7 +211,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         store.save(account)
         store.lastUidNext = 0
         this.account = account
-        NewMailWorker.schedule(getApplication())
+        syncMode = store.syncMode
+        MailSync.apply(getApplication())
         folder = "INBOX"
         screen = Screen.Mailbox
         lastRefresh = System.currentTimeMillis()
@@ -208,9 +222,9 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun signOut() {
-        NewMailWorker.cancel(getApplication())
         prefetchJob?.cancel()
         store.clear()
+        MailSync.apply(getApplication()) // No account any more: stops push and background checks.
         Thread { cache.clear() }.start()
         account = null
         folders = emptyList()
@@ -466,16 +480,27 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         launchTask(onError = change.restore) { change.run() }
     }
 
-    /** Status line for the new-mail check, shown in the folder menu. */
+    fun openSettings() {
+        screen = Screen.Settings
+    }
+
+    fun changeSyncMode(mode: SyncMode) {
+        store.syncMode = mode
+        syncMode = mode
+        MailSync.apply(getApplication())
+    }
+
+    /** Status line for background sync, shown in Settings and the account dialog. */
     fun newMailStatus(): String {
+        if (store.syncMode == SyncMode.MANUAL) return "Background checks are off"
         if (!NotificationManagerCompat.from(getApplication()).areNotificationsEnabled()) {
             return "Notifications are off for Mailroom. Turn them on in Android Settings → Apps → Mailroom."
         }
         val time = store.lastCheckTime
-        if (time == 0L) return "New-mail check hasn't run yet"
+        if (time == 0L) return "Mail hasn't been checked in the background yet"
         val ago = DateUtils.getRelativeTimeSpanString(time).toString()
         val error = store.lastCheckError
-        return if (error.isEmpty()) "New mail last checked $ago" else "New-mail check failed $ago: $error"
+        return if (error.isEmpty()) "Last checked in the background $ago" else "Background check failed $ago: $error"
     }
 
     // --- Writing ------------------------------------------------------------------------------
@@ -558,6 +583,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         const val PREFETCH_BATCH = 5
         const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.
         const val RESUME_REFRESH_MS = 60 * 1000L
-        const val NOTIFICATION_REFRESH_MS = 5 * 1000L // Skips only the refresh the launch itself just started.
+        const val NOTIFICATION_REFRESH_MS = 5 * 1000L
+        const val LIVE_REFRESH_MS = 5 * 1000L // Skips only the refresh the launch itself just started.
     }
 }

@@ -71,5 +71,10 @@ class AccountStore(context: Context) {
         get() = prefs.getString("lastCheckError", "").orEmpty()
         set(value) = prefs.edit().putString("lastCheckError", value).apply()
 
+    /** How often to fetch new mail in the background. */
+    var syncMode: SyncMode
+        get() = runCatching { SyncMode.valueOf(prefs.getString("syncMode", null) ?: "") }.getOrDefault(SyncMode.EVERY_15)
+        set(value) = prefs.edit().putString("syncMode", value.name).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

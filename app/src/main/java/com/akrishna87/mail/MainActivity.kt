@@ -33,6 +33,8 @@ class MainActivity : ComponentActivity() {
             MailTheme { MailApp(vm) }
         }
         if (savedInstanceState == null) handleNotificationTap(intent)
+        // Makes sure push is running if chosen; Android only allows starting it while the app is open.
+        MailSync.apply(this)
         // The first WebView in a process takes a moment to start the browser engine; do it while
         // the app is idle, so the first email opens without that delay.
         Looper.myQueue().addIdleHandler {
@@ -47,8 +49,8 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handleNotificationTap(intent: Intent?) {
-        if (intent?.action != NewMailWorker.ACTION_OPEN_INBOX) return
-        val uid = intent.getLongExtra(NewMailWorker.EXTRA_UID, 0L)
+        if (intent?.action != MailSync.ACTION_OPEN_INBOX) return
+        val uid = intent.getLongExtra(MailSync.EXTRA_UID, 0L)
         vm.openFromNotification(uid.takeIf { it > 0 })
         setIntent(Intent()) // Handle each tap once, not again after rotation.
     }

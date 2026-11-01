@@ -17,6 +17,8 @@ import java.io.File
 import java.io.Serializable
 import java.util.Date
 import java.util.Properties
+import java.util.Timer
+import kotlin.concurrent.timerTask
 import javax.activation.DataHandler
 import javax.mail.Address
 import javax.mail.AuthenticationFailedException
@@ -378,16 +380,20 @@ class MailService(private val context: Context, private val store: AccountStore)
         }
     }
 
-    /** Returns the current INBOX UIDNEXT and any unread messages that arrived since [lastUidNext]. */
-    suspend fun newMail(account: Account, lastUidNext: Long): Pair<Long, List<MessageSummary>> = imap(account) { s ->
+    /**
+     * Waits (IMAP IDLE) until the inbox changes, e.g. new mail arrives, or until [maxMs] passes.
+     * Blocks the connection meanwhile, so push uses its own [MailService].
+     */
+    suspend fun waitForInboxChange(account: Account, maxMs: Long) = imap(account) { s ->
         val f = selected(s, "INBOX")
-        val next = f.uidNext
-        if (lastUidNext <= 0 || next <= lastUidNext) return@imap next to emptyList()
-        val fresh = f.getMessagesByUID(lastUidNext, next - 1)
-            .filterNotNull()
-            .filter { !it.isSet(Flags.Flag.SEEN) }
-            .map { summarize(f, it) }
-        next to fresh
+        // Any other command on the folder ends the IDLE; a timer sends one after maxMs.
+        val timer = Timer(true)
+        timer.schedule(timerTask { runCatching { f.messageCount } }, maxMs)
+        try {
+            f.idle(true)
+        } finally {
+            timer.cancel()
+        }
     }
 
     // --- Parsing ------------------------------------------------------------------------------
