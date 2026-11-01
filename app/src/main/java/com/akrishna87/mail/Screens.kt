@@ -15,9 +15,11 @@ import androidx.activity.compose.BackHandler
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.combinedClickable
 import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.foundation.layout.Arrangement
@@ -49,6 +51,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.automirrored.filled.Send
+import androidx.compose.material.icons.filled.Check
 import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.Delete
 import androidx.compose.material.icons.filled.Edit
@@ -88,6 +91,7 @@ import androidx.compose.material3.SwipeToDismissBoxValue
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.pulltorefresh.PullToRefreshBox
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.material3.rememberSwipeToDismissBoxState
@@ -297,21 +301,27 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     ) {
         Scaffold(
             topBar = {
-                SearchBar(
-                    vm = vm,
-                    onMenu = { scope.launch { drawer.open() } },
-                    onSearch = vm::openSearch,
-                    onAccount = { showAccount = true },
-                )
+                if (vm.selection.isNotEmpty()) {
+                    SelectionBar(vm)
+                } else {
+                    SearchBar(
+                        vm = vm,
+                        onMenu = { scope.launch { drawer.open() } },
+                        onSearch = vm::openSearch,
+                        onAccount = { showAccount = true },
+                    )
+                }
             },
             floatingActionButton = {
-                // Like Gmail, the button shrinks to just the pencil once you scroll.
-                ExtendedFloatingActionButton(
-                    onClick = { vm.compose() },
-                    expanded = atTop,
-                    icon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                    text = { Text("Compose") },
-                )
+                // Like Gmail, the button shrinks to just the pencil once you scroll, and hides while selecting.
+                if (vm.selection.isEmpty()) {
+                    ExtendedFloatingActionButton(
+                        onClick = { vm.compose() },
+                        expanded = atTop,
+                        icon = { Icon(Icons.Default.Edit, contentDescription = null) },
+                        text = { Text("Compose") },
+                    )
+                }
             },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { pad ->
@@ -384,6 +394,47 @@ private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onSearch: () -> Uni
             Avatar(vm.account?.name?.ifBlank { null } ?: vm.account?.email.orEmpty(), size = 32.dp)
         }
     }
+}
+
+/** Actions for the selected messages, shown in place of the search bar. */
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun SelectionBar(vm: MailViewModel) {
+    val chosen = vm.messages.filter { it.uid in vm.selection }
+    val anyUnread = chosen.any { !it.seen }
+    val allStarred = chosen.isNotEmpty() && chosen.all { it.flagged }
+    TopAppBar(
+        navigationIcon = {
+            IconButton(onClick = vm::clearSelection) { Icon(Icons.Default.Close, contentDescription = "Cancel selection") }
+        },
+        title = { Text(vm.selection.size.toString()) },
+        actions = {
+            if (vm.selection.size < vm.messages.size) {
+                TextButton(onClick = vm::selectAll) { Text("All") }
+            }
+            if (vm.canArchive) {
+                IconButton(onClick = vm::archiveSelected) {
+                    Icon(painterResource(R.drawable.ic_archive), contentDescription = "Archive")
+                }
+            }
+            IconButton(onClick = vm::deleteSelected) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
+            IconButton(onClick = { vm.markSelectedRead(anyUnread) }) {
+                if (anyUnread) {
+                    Icon(painterResource(R.drawable.ic_drafts), contentDescription = "Mark read")
+                } else {
+                    Icon(painterResource(R.drawable.ic_mark_unread), contentDescription = "Mark unread")
+                }
+            }
+            IconButton(onClick = { vm.starSelected(!allStarred) }) {
+                if (allStarred) {
+                    Icon(painterResource(R.drawable.ic_star_border), contentDescription = "Remove star")
+                } else {
+                    Icon(Icons.Default.Star, contentDescription = "Star", tint = Color(0xFFF4B400))
+                }
+            }
+        },
+        colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    )
 }
 
 @Composable
@@ -489,8 +540,11 @@ private fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
             true
         },
     )
+    val selecting = vm.selection.isNotEmpty()
     SwipeToDismissBox(
         state = state,
+        enableDismissFromStartToEnd = !selecting,
+        enableDismissFromEndToStart = !selecting,
         backgroundContent = {
             val toEnd = state.dismissDirection == SwipeToDismissBoxValue.StartToEnd
             Box(
@@ -505,12 +559,19 @@ private fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
             }
         },
     ) {
-        MessageRow(m, onClick = { vm.open(m.uid) }, onStar = { vm.toggleStar(m.uid) })
+        MessageRow(
+            m,
+            selected = m.uid in vm.selection,
+            onClick = { if (selecting) vm.toggleSelection(m.uid) else vm.open(m.uid) },
+            onSelect = { vm.toggleSelection(m.uid) },
+            onStar = { vm.toggleStar(m.uid) },
+        )
     }
 }
 
+@OptIn(ExperimentalFoundationApi::class)
 @Composable
-private fun MessageRow(m: MessageSummary, onClick: () -> Unit, onStar: () -> Unit) {
+private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit, onSelect: () -> Unit, onStar: () -> Unit) {
     val context = LocalContext.current
     val unread = !m.seen
     val weight = if (unread) FontWeight.Bold else FontWeight.Normal
@@ -519,11 +580,21 @@ private fun MessageRow(m: MessageSummary, onClick: () -> Unit, onStar: () -> Uni
     Row(
         Modifier
             .fillMaxWidth()
-            .background(MaterialTheme.colorScheme.surface)
-            .clickable(onClick = onClick)
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
+            .combinedClickable(onClick = onClick, onLongClick = onSelect)
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
     ) {
-        Avatar(m.from)
+        // Like Gmail, the avatar turns into a check mark when selected, and tapping it selects.
+        Box(Modifier.clip(CircleShape).clickable(onClick = onSelect)) {
+            if (selected) {
+                Box(
+                    Modifier.size(40.dp).background(MaterialTheme.colorScheme.primary),
+                    contentAlignment = Alignment.Center,
+                ) { Icon(Icons.Default.Check, contentDescription = "Selected", tint = MaterialTheme.colorScheme.onPrimary) }
+            } else {
+                Avatar(m.from)
+            }
+        }
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
@@ -606,38 +677,42 @@ private fun SearchScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
 
     Scaffold(
         topBar = {
-            Row(
-                Modifier.statusBarsPadding().padding(horizontal = 4.dp, vertical = 8.dp).fillMaxWidth().height(56.dp),
-                verticalAlignment = Alignment.CenterVertically,
-            ) {
-                BackButton(vm::back)
-                BasicTextField(
-                    value = text,
-                    onValueChange = {
-                        text = it
-                        typing = true
-                    },
-                    modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { if (it.isFocused) typing = true },
-                    singleLine = true,
-                    textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
-                    cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
-                    keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
-                    keyboardActions = KeyboardActions(onSearch = { if (text.isNotBlank()) submit(text) }),
-                    decorationBox = { field ->
-                        Box(contentAlignment = Alignment.CenterStart) {
-                            if (text.isEmpty()) {
-                                Text("Search in mail", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+            if (vm.selection.isNotEmpty()) {
+                SelectionBar(vm)
+            } else {
+                Row(
+                    Modifier.statusBarsPadding().padding(horizontal = 4.dp, vertical = 8.dp).fillMaxWidth().height(56.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    BackButton(vm::back)
+                    BasicTextField(
+                        value = text,
+                        onValueChange = {
+                            text = it
+                            typing = true
+                        },
+                        modifier = Modifier.weight(1f).focusRequester(focus).onFocusChanged { if (it.isFocused) typing = true },
+                        singleLine = true,
+                        textStyle = MaterialTheme.typography.bodyLarge.copy(color = MaterialTheme.colorScheme.onSurface),
+                        cursorBrush = SolidColor(MaterialTheme.colorScheme.primary),
+                        keyboardOptions = KeyboardOptions(imeAction = ImeAction.Search),
+                        keyboardActions = KeyboardActions(onSearch = { if (text.isNotBlank()) submit(text) }),
+                        decorationBox = { field ->
+                            Box(contentAlignment = Alignment.CenterStart) {
+                                if (text.isEmpty()) {
+                                    Text("Search in mail", style = MaterialTheme.typography.bodyLarge, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                                }
+                                field()
                             }
-                            field()
-                        }
-                    },
-                )
-                if (text.isNotEmpty()) {
-                    IconButton(onClick = {
-                        text = ""
-                        typing = true
-                        focus.requestFocus()
-                    }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                        },
+                    )
+                    if (text.isNotEmpty()) {
+                        IconButton(onClick = {
+                            text = ""
+                            typing = true
+                            focus.requestFocus()
+                        }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                    }
                 }
             }
         },

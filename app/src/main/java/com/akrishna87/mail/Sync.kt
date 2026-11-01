@@ -39,7 +39,10 @@ object MailSync {
     const val ACTION_OPEN_INBOX = "com.akrishna87.mail.OPEN_INBOX"
     const val EXTRA_UID = "uid"
     private const val CHANNEL_NEW_MAIL = "new_mail"
-    private const val NEW_MAIL_NOTIFICATION = 1
+    private const val GROUP = "new_mail"
+    private const val SUMMARY_ID = 1 // 2 is the push service's notification.
+    private const val FIRST_MESSAGE_ID = 100
+    private const val MAX_NOTIFICATIONS = 10
     private const val WORK_NAME = "new-mail-check"
     private const val PREFETCH_NEW = 10
     private const val PREFETCH_MAX_BYTES = 512 * 1024
@@ -98,6 +101,10 @@ object MailSync {
         SyncEvents.inboxChanged.tryEmit(Unit)
     }
 
+    /**
+     * One notification per new email, grouped like Gmail's: tapping one opens that email, tapping
+     * the group summary opens the inbox.
+     */
     private fun notifyNewMail(context: Context, messages: List<MessageSummary>) {
         if (Build.VERSION.SDK_INT >= 33 &&
             ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
@@ -108,29 +115,47 @@ object MailSync {
         context.getSystemService(NotificationManager::class.java).createNotificationChannel(
             NotificationChannel(CHANNEL_NEW_MAIL, "New mail", NotificationManager.IMPORTANCE_DEFAULT),
         )
-        // One new email opens that email; several open the inbox. Either way the inbox refreshes.
+        val manager = NotificationManagerCompat.from(context)
+        messages.take(MAX_NOTIFICATIONS).forEach { m ->
+            val id = notificationId(m.uid)
+            val notification = NotificationCompat.Builder(context, CHANNEL_NEW_MAIL)
+                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setContentTitle(m.from)
+                .setContentText(m.subject)
+                .setStyle(NotificationCompat.BigTextStyle().bigText(listOfNotNull(m.subject, m.preview).joinToString("\n")))
+                .setWhen(m.date?.time ?: System.currentTimeMillis())
+                .setShowWhen(true)
+                // Each notification needs its own request code, or Android reuses one email's intent for all.
+                .setContentIntent(openIntent(context, id, m.uid))
+                .setGroup(GROUP)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(id, notification)
+        }
+        val summary = NotificationCompat.Builder(context, CHANNEL_NEW_MAIL)
+            .setSmallIcon(android.R.drawable.ic_dialog_email)
+            .setContentTitle("${messages.size} new email${if (messages.size == 1) "" else "s"}")
+            .setStyle(NotificationCompat.InboxStyle().also { style -> messages.take(5).forEach { style.addLine("${it.from}  ${it.subject}") } })
+            .setContentIntent(openIntent(context, SUMMARY_ID, null))
+            .setGroup(GROUP)
+            .setGroupSummary(true)
+            .setAutoCancel(true)
+            .build()
+        manager.notify(SUMMARY_ID, summary)
+    }
+
+    /** Removes an email's notification, e.g. once it has been read in the app. */
+    fun cancelNotification(context: Context, uid: Long) {
+        NotificationManagerCompat.from(context).cancel(notificationId(uid))
+    }
+
+    private fun notificationId(uid: Long): Int = FIRST_MESSAGE_ID + (uid % 1_000_000_000L).toInt()
+
+    private fun openIntent(context: Context, requestCode: Int, uid: Long?): PendingIntent {
         val tap = Intent(context, MainActivity::class.java)
             .setAction(ACTION_OPEN_INBOX)
             .addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP or Intent.FLAG_ACTIVITY_CLEAR_TOP)
-        if (messages.size == 1) tap.putExtra(EXTRA_UID, messages[0].uid)
-        val open = PendingIntent.getActivity(
-            context,
-            0,
-            tap,
-            PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT,
-        )
-        val (title, text) = if (messages.size == 1) {
-            messages[0].from to messages[0].subject
-        } else {
-            "${messages.size} new emails" to messages.joinToString(", ") { it.from }
-        }
-        val notification = NotificationCompat.Builder(context, CHANNEL_NEW_MAIL)
-            .setSmallIcon(android.R.drawable.ic_dialog_email)
-            .setContentTitle(title)
-            .setContentText(text)
-            .setContentIntent(open)
-            .setAutoCancel(true)
-            .build()
-        NotificationManagerCompat.from(context).notify(NEW_MAIL_NOTIFICATION, notification)
+        if (uid != null) tap.putExtra(EXTRA_UID, uid)
+        return PendingIntent.getActivity(context, requestCode, tap, PendingIntent.FLAG_IMMUTABLE or PendingIntent.FLAG_UPDATE_CURRENT)
     }
 }

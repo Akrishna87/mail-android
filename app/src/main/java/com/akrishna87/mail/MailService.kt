@@ -293,10 +293,11 @@ class MailService(private val context: Context, private val store: AccountStore)
         }
 
     /** Sets or clears an IMAP system flag, such as Seen (read) or Flagged (starred), with one command. */
-    suspend fun setFlag(account: Account, folderName: String, uid: Long, flag: String, on: Boolean) = imap(account) { s ->
+    suspend fun setFlag(account: Account, folderName: String, uids: List<Long>, flag: String, on: Boolean) = imap(account) { s ->
+        if (uids.isEmpty()) return@imap
         val f = selected(s, folderName)
         f.doCommand { p ->
-            val r = p.command("UID STORE $uid ${if (on) "+" else "-"}FLAGS.SILENT ($flag)", null)
+            val r = p.command("UID STORE ${uids.joinToString(",")} ${if (on) "+" else "-"}FLAGS.SILENT ($flag)", null)
             p.notifyResponseHandlers(r.copyOfRange(0, r.size - 1))
             p.handleResult(r.last())
             null
@@ -379,34 +380,35 @@ class MailService(private val context: Context, private val store: AccountStore)
         }
     }
 
-    /** Moves the message to Trash, or deletes it permanently when already in Trash. */
-    suspend fun delete(account: Account, folderName: String, uid: Long) = imap(account) { s ->
+    /** Moves the messages to Trash, or deletes them permanently when already in Trash. */
+    suspend fun delete(account: Account, folderName: String, uids: List<Long>) = imap(account) { s ->
         val trash = folderWithRole(s, "trash")
         val f = selected(s, folderName)
-        val m = f.getMessageByUID(uid) ?: return@imap
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        if (msgs.isEmpty()) return@imap
         if (trash != null && trash.fullName != f.fullName) {
-            move(s, f, m, trash)
+            move(s, f, msgs, trash)
         } else {
-            m.setFlag(Flags.Flag.DELETED, true)
+            f.setFlags(msgs, Flags(Flags.Flag.DELETED), true)
             f.expunge()
         }
     }
 
     /** Moves the message out of the inbox: to Archive, or for Gmail to All Mail (removing the Inbox label). */
-    suspend fun archive(account: Account, folderName: String, uid: Long) = imap(account) { s ->
+    suspend fun archive(account: Account, folderName: String, uids: List<Long>) = imap(account) { s ->
         val target = folderWithRole(s, "archive") ?: folderWithRole(s, "all")
             ?: throw MessagingException("This account has no Archive folder")
         val f = selected(s, folderName)
-        val m = f.getMessageByUID(uid) ?: return@imap
-        move(s, f, m, target)
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        if (msgs.isNotEmpty()) move(s, f, msgs, target)
     }
 
-    private fun move(s: IMAPStore, from: IMAPFolder, m: Message, to: Folder) {
+    private fun move(s: IMAPStore, from: IMAPFolder, msgs: Array<Message>, to: Folder) {
         if (s.hasCapability("MOVE")) {
-            from.moveMessages(arrayOf(m), to)
+            from.moveMessages(msgs, to)
         } else {
-            from.copyMessages(arrayOf(m), to)
-            m.setFlag(Flags.Flag.DELETED, true)
+            from.copyMessages(msgs, to)
+            from.setFlags(msgs, Flags(Flags.Flag.DELETED), true)
             from.expunge()
         }
     }

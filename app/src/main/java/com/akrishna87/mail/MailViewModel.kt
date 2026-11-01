@@ -161,12 +161,13 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Navigation ---------------------------------------------------------------------------
 
-    val canGoBack: Boolean get() = screen !is Screen.Setup && screen !is Screen.Mailbox
+    val canGoBack: Boolean get() = selection.isNotEmpty() || (screen !is Screen.Setup && screen !is Screen.Mailbox)
 
     /** Where a message opened from a list returns to. */
     private fun listScreen(): Screen = if (searchQuery != null) Screen.Search else Screen.Mailbox
 
     fun back() {
+        if (selection.isNotEmpty()) return clearSelection()
         if (screen == Screen.Search) return clearSearch()
         screen = when (val s = screen) {
             is Screen.Login -> Screen.Setup
@@ -279,6 +280,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     fun search(query: String) {
         val q = query.trim()
         if (q.isEmpty()) return
+        selection = emptySet()
         searchQuery = q
         screen = Screen.Search
         recentSearches = (listOf(q) + recentSearches.filterNot { it.equals(q, ignoreCase = true) }).take(MAX_RECENT_SEARCHES)
@@ -335,6 +337,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     fun selectFolder(fullName: String) {
+        selection = emptySet()
         searchQuery = null
         searchFolder = null
         folder = fullName
@@ -436,6 +439,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     private fun markRead(a: Account, f: String, uid: Long) {
+        MailSync.cancelNotification(getApplication(), uid)
         val known = messages.firstOrNull { it.uid == uid }
         if (known?.seen == true) return
         // A message opened from a notification may not be in the list yet; still mark it on the server.
@@ -444,36 +448,76 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
         }
         viewModelScope.launch {
-            runCatching { mail.setFlag(a, f, uid, "\\Seen", true) }
+            runCatching { mail.setFlag(a, f, listOf(uid), "\\Seen", true) }
             persistList(f)
         }
     }
 
     fun markUnread(uid: Long) {
+        setRead(listOf(uid), read = false)
+        screen = listScreen()
+    }
+
+    private fun setRead(uids: List<Long>, read: Boolean) {
         val a = account ?: return
         val f = activeFolder
-        messages = messages.map { if (it.uid == uid) it.copy(seen = false) else it }
-        folders = folders.map { if (it.fullName == f && it.role == "inbox") it.copy(unread = it.unread + 1) else it }
-        screen = listScreen()
+        val changed = messages.count { it.uid in uids && it.seen != read }
+        messages = messages.map { if (it.uid in uids) it.copy(seen = read) else it }
+        val delta = if (read) -changed else changed
+        folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread + delta)) else it }
+        if (read) uids.forEach { MailSync.cancelNotification(getApplication(), it) }
         launchTask {
-            mail.setFlag(a, f, uid, "\\Seen", false)
+            mail.setFlag(a, f, uids, "\\Seen", read)
             persistList(f)
         }
     }
 
-    fun toggleStar(uid: Long) {
+    fun toggleStar(uid: Long) = setStarred(listOf(uid), on = !isStarred(uid))
+
+    private fun setStarred(uids: List<Long>, on: Boolean) {
         val a = account ?: return
         val f = activeFolder
-        val on = messages.firstOrNull { it.uid == uid }?.flagged != true
-        val flip = { value: Boolean -> messages = messages.map { if (it.uid == uid) it.copy(flagged = value) else it } }
-        flip(on)
-        launchTask(onError = { flip(!on) }) {
-            mail.setFlag(a, f, uid, "\\Flagged", on)
+        val before = messages
+        messages = messages.map { if (it.uid in uids) it.copy(flagged = on) else it }
+        launchTask(onError = { if (activeFolder == f) messages = before }) {
+            mail.setFlag(a, f, uids, "\\Flagged", on)
             persistList(f)
         }
     }
 
     fun isStarred(uid: Long): Boolean = messages.firstOrNull { it.uid == uid }?.flagged == true
+
+    // --- Selecting several messages (long press), like Gmail --------------------------------------
+
+    /** Messages picked with a long press; while not empty the list is in selection mode. */
+    var selection by mutableStateOf(setOf<Long>())
+        private set
+
+    fun toggleSelection(uid: Long) {
+        selection = if (uid in selection) selection - uid else selection + uid
+    }
+
+    fun selectAll() {
+        selection = messages.map { it.uid }.toSet()
+    }
+
+    fun clearSelection() {
+        selection = emptySet()
+    }
+
+    fun archiveSelected() = archiveAll(selection.toList())
+
+    fun deleteSelected() = deleteAll(selection.toList())
+
+    fun markSelectedRead(read: Boolean) {
+        setRead(selection.toList(), read)
+        clearSelection()
+    }
+
+    fun starSelected(on: Boolean) {
+        setStarred(selection.toList(), on)
+        clearSelection()
+    }
 
     fun openAttachment(m: MessageDetail, attachment: ReceivedAttachment) {
         val a = account ?: return
@@ -493,28 +537,34 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         get() = folders.firstOrNull { it.fullName == activeFolder }?.role == "inbox" &&
             folders.any { it.role == "archive" || it.role == "all" }
 
-    fun archive(uid: Long) {
+    fun archive(uid: Long) = archiveAll(listOf(uid))
+
+    fun delete(uid: Long) = deleteAll(listOf(uid))
+
+    private fun archiveAll(uids: List<Long>) {
         val a = account ?: return
         val f = activeFolder
-        stage(uid, "Archived") { mail.archive(a, f, uid) }
+        stage(uids, "Archived") { mail.archive(a, f, uids) }
     }
 
-    fun delete(uid: Long) {
+    private fun deleteAll(uids: List<Long>) {
         val a = account ?: return
         val f = activeFolder
-        stage(uid, "Deleted") { mail.delete(a, f, uid) }
+        stage(uids, "Deleted") { mail.delete(a, f, uids) }
     }
 
     /**
      * Removes the message from the list right away and offers Undo, like Gmail. The server change
      * runs when the snackbar times out, another change replaces it, or the app leaves the screen.
      */
-    private fun stage(uid: Long, text: String, change: suspend () -> Unit) {
-        if (messages.none { it.uid == uid }) return
+    private fun stage(uids: List<Long>, text: String, change: suspend () -> Unit) {
+        if (messages.none { it.uid in uids }) return
         commitPendingChange()
         val f = activeFolder
         val before = messages
-        messages = messages.filterNot { it.uid == uid }
+        messages = messages.filterNot { it.uid in uids }
+        selection = selection - uids.toSet()
+        uids.forEach { MailSync.cancelNotification(getApplication(), it) }
         if (screen is Screen.Reader) screen = listScreen()
         pendingChange = PendingChange(
             run = {
@@ -523,7 +573,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             },
             restore = { if (activeFolder == f) messages = before },
         )
-        undoOffer = UndoOffer(text, System.nanoTime())
+        undoOffer = UndoOffer(if (uids.size == 1) text else "${uids.size} ${text.lowercase()}", System.nanoTime())
     }
 
     fun undoPendingChange() {
