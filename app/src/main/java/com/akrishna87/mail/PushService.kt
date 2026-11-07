@@ -102,11 +102,13 @@ class PushService : Service() {
             .setContentIntent(open)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
+            .setSilent(true)
+            .setShowWhen(false)
             .build()
     }
 
     companion object {
-        private const val CHANNEL_ID = "push"
+        const val CHANNEL_ID = "push"
         private const val NOTIFICATION_ID = 2
         private const val IDLE_MS = 9 * 60 * 1000L
         private const val MIN_BACKOFF_MS = 15 * 1000L

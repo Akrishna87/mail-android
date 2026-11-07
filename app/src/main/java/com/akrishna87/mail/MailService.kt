@@ -321,6 +321,23 @@ class MailService(private val context: Context, private val store: AccountStore)
         gmailSearch(selected(s, folderName), query).sortedDescending()
     }
 
+    /**
+     * UIDs to list for a folder, newest first: optionally only one Gmail inbox tab, and optionally
+     * only unread emails.
+     */
+    suspend fun listUids(account: Account, folderName: String, category: String?, unreadOnly: Boolean): List<Long> =
+        imap(account) { s ->
+            val f = selected(s, folderName)
+            val inTab = category?.let { gmailSearch(f, "in:inbox category:$it") }
+            val unread = if (unreadOnly) uidSearch(f, "UID SEARCH UNSEEN", null).toSet() else null
+            val uids = when {
+                inTab != null && unread != null -> inTab.filter { it in unread }
+                inTab != null -> inTab
+                else -> unread.orEmpty().toList()
+            }
+            uids.sortedDescending()
+        }
+
     /** Unread count of each Gmail inbox category (Primary, Promotions, ...). */
     suspend fun categoryUnread(account: Account): Map<String, Int> = imap(account) { s ->
         val f = selected(s, "INBOX")

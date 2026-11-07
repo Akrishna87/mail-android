@@ -63,6 +63,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var category by mutableStateOf(if (account?.provider == Provider.GMAIL) "primary" else null)
         private set
 
+    /** Only unread emails in the current folder or tab, or everything again. */
+    var unreadOnly by mutableStateOf(false)
+        private set
+
     /** Unread count per Gmail inbox tab. */
     var categoryUnread by mutableStateOf(mapOf<String, Int>())
         private set
@@ -127,7 +131,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** The list key last loaded from the server; a saved copy never replaces it. */
     private var serverKey: String? = null
-    private var categoryUids: List<Long> = emptyList()
+    private var listUids: List<Long> = emptyList()
     private var running = 0
     private var lastRefresh = 0L
     private var prefetchJob: Job? = null
@@ -372,10 +376,16 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     /** Gmail opens the inbox on the Primary tab, like the Gmail app. */
     private fun defaultCategory(f: String): String? = if (f == "INBOX" && isGmail) "primary" else null
 
-    /** Cache key of the list shown for [f]: a Gmail inbox tab has its own. */
-    private fun listKey(f: String): String = if (f == "INBOX") MailSync.inboxKey(category) else f
+    /** Cache key of the list shown for [f]: a Gmail inbox tab, and the Unread filter, have their own. */
+    private fun listKey(f: String): String =
+        (if (f == "INBOX") MailSync.inboxKey(category) else f) + if (unreadOnly) "#unread" else ""
 
     fun selectCategory(cat: String) = selectFolder("INBOX", cat)
+
+    fun toggleUnreadOnly() {
+        unreadOnly = !unreadOnly
+        selectFolder(folder, category)
+    }
 
     /** Bottom bar "Mail": the inbox (Primary on Gmail). */
     fun openMailHome() = selectFolder("INBOX")
@@ -392,7 +402,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         searchFolder = null
         folder = fullName
         category = cat
-        categoryUids = emptyList()
+        listUids = emptyList()
         prefetchJob?.cancel()
         // Don't leave the previous folder's or tab's emails on screen (or let them be saved) under the new one.
         val key = listKey(fullName)
@@ -425,27 +435,33 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun loadMessages(reset: Boolean) {
         val a = account ?: return
         val f = folder
-        val cat = category
+        val cat = if (f == "INBOX") category else null
+        val unread = unreadOnly
+        var fellBack = false
         if (reset) page = 1
-        val result = if (f == "INBOX" && cat != null) {
+        val result = if (cat != null || unread) {
             try {
-                // A Gmail tab is a Gmail search of the inbox; its UIDs are fetched once and shown in pages.
-                if (reset || categoryUids.isEmpty()) categoryUids = mail.gmailQueryUids(a, f, "in:inbox category:$cat")
-                val pageUids = categoryUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
+                // A Gmail tab and the Unread filter are searches; their UIDs are fetched once and shown in pages.
+                if (reset || listUids.isEmpty()) listUids = mail.listUids(a, f, cat, unread)
+                val pageUids = listUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
                 val rows = mail.summaries(a, f, pageUids)
-                // Gmail's search found these emails; say so if some couldn't be loaded rather than hide them.
-                if (rows.size < pageUids.size) notice = "${pageUids.size - rows.size} emails in this tab couldn't be loaded. Pull down to retry."
-                Page(rows, categoryUids.size > page * MailService.PAGE_SIZE)
+                // The search found these emails; say so if some couldn't be loaded rather than hide them.
+                if (rows.size < pageUids.size) notice = "${pageUids.size - rows.size} emails here couldn't be loaded. Pull down to retry."
+                Page(rows, listUids.size > page * MailService.PAGE_SIZE)
             } catch (e: MessagingException) {
+                if (cat == null) throw e
                 // Rather than an empty screen, show the whole inbox and say why the tab didn't load.
                 notice = "Couldn't load ${cat.replaceFirstChar { it.uppercase() }}, showing the whole inbox. ${friendly(e)}"
                 category = null
+                unreadOnly = false
+                fellBack = true
                 mail.messages(a, f, page)
             }
         } else {
             mail.messages(a, f, page)
         }
-        if (f != folder || (cat != category && category != null)) return
+        val stillShowing = f == folder && (fellBack || (cat == (if (f == "INBOX") category else null) && unread == unreadOnly))
+        if (!stillShowing) return
         // Keep previews of messages that were already downloaded.
         val previews = messages.associate { it.uid to it.preview }
         val fresh = result.messages.map { it.copy(preview = previews[it.uid]) }
@@ -460,7 +476,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Saves the shown list for [f], unless it is showing search results. */
     private suspend fun persistList(f: String) {
-        if (searchQuery != null || f != folder || messagesKey != listKey(f)) return
+        // Filtered lists aren't kept: they change as soon as an email is read.
+        if (searchQuery != null || unreadOnly || f != folder || messagesKey != listKey(f)) return
         val snapshot = messages
         val key = listKey(f)
         withContext(Dispatchers.IO) { cache.saveList(key, snapshot) }

@@ -325,11 +325,9 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                             onMenu = { scope.launch { drawer.open() } },
                             onAccount = { showAccount = true },
                         )
-                        if (vm.isGmail) {
-                            CategoryChips(vm, onJumpToUnread = {
-                                vm.jumpToFirstUnread { i -> scope.launch { listState.animateScrollToItem(i) } }
-                            })
-                        }
+                        CategoryChips(vm, onJumpToUnread = {
+                            vm.jumpToFirstUnread { i -> scope.launch { listState.animateScrollToItem(i) } }
+                        })
                     }
                 }
             },
@@ -356,7 +354,8 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                     if (vm.messages.isEmpty() && !vm.loading) {
                         item {
                             Text(
-                                "Nothing in ${vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "this folder"}",
+                                (if (vm.unreadOnly) "No unread emails in " else "Nothing in ") +
+                                    (vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "this folder"),
                                 Modifier.fillMaxWidth().padding(48.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -407,7 +406,19 @@ private fun CategoryChips(vm: MailViewModel, onJumpToUnread: () -> Unit) {
         Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
         horizontalArrangement = Arrangement.spacedBy(8.dp),
     ) {
-        MailService.GMAIL_CATEGORIES.forEach { cat ->
+        val on = vm.unreadOnly
+        Text(
+            if (on) "\u2713 Unread" else "Unread",
+            Modifier
+                .clip(RoundedCornerShape(18.dp))
+                .border(1.dp, if (on) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.outlineVariant, RoundedCornerShape(18.dp))
+                .background(if (on) MaterialTheme.colorScheme.primaryContainer else Color.Transparent)
+                .clickable { vm.toggleUnreadOnly() }
+                .padding(horizontal = 14.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.labelLarge,
+            color = if (on) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
+        )
+        if (vm.isGmail) MailService.GMAIL_CATEGORIES.forEach { cat ->
             val chosen = vm.folder == "INBOX" && vm.category == cat && vm.searchQuery == null
             val unread = vm.categoryUnread[cat] ?: 0
             Text(
@@ -1150,13 +1161,21 @@ private fun SettingsScreen(vm: MailViewModel) {
                 color = soft,
             )
             if (vm.syncMode == SyncMode.PUSH) {
-                Text(
-                    "Android requires a notification while push is on. To hide it, long-press it and turn off " +
-                        "\u201CPush connection\u201D notifications; push keeps working.",
-                    Modifier.padding(16.dp),
-                    style = MaterialTheme.typography.bodySmall,
-                    color = soft,
-                )
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(
+                        "Android shows a \u201CWaiting for new mail\u201D notification while push is on. " +
+                            "You can hide it: push keeps working.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = soft,
+                    )
+                    OutlinedButton(onClick = {
+                        context.startActivity(
+                            Intent(android.provider.Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS)
+                                .putExtra(android.provider.Settings.EXTRA_APP_PACKAGE, context.packageName)
+                                .putExtra(android.provider.Settings.EXTRA_CHANNEL_ID, PushService.CHANNEL_ID),
+                        )
+                    }) { Text("Hide this notification") }
+                }
             }
         }
     }

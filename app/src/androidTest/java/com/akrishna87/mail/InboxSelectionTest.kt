@@ -43,4 +43,16 @@ class InboxSelectionTest {
         // The bottom bar steps aside while selecting.
         compose.onNodeWithText("Search").assertDoesNotExist()
     }
+
+    @Test
+    fun unreadChipTogglesTheFilter() {
+        val vm = MailViewModel(ApplicationProvider.getApplicationContext<Application>())
+        vm.showMessagesForTest(listOf(MessageSummary(uid = 1, from = "Sender", subject = "Subject", date = null, seen = false)))
+        compose.setContent { MaterialTheme { MailApp(vm) } }
+
+        compose.onNodeWithText("Unread").performClick()
+        compose.runOnIdle { assertEquals(true, vm.unreadOnly) }
+        compose.onNodeWithText("\u2713 Unread").performClick()
+        compose.runOnIdle { assertEquals(false, vm.unreadOnly) }
+    }
 }
