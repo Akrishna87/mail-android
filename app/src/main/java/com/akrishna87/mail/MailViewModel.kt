@@ -368,6 +368,15 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun selectCategory(cat: String) = selectFolder("INBOX", cat)
 
+    /** Bottom bar "Mail": the inbox (Primary on Gmail). */
+    fun openMailHome() = selectFolder("INBOX")
+
+    /** Bottom bar "Starred": the Starred folder, or a search for starred mail where there is none. */
+    fun openStarred() {
+        val starred = folders.firstOrNull { it.role == "starred" }
+        if (starred != null) selectFolder(starred.fullName, cat = null) else search("is:starred")
+    }
+
     fun selectFolder(fullName: String, cat: String? = defaultCategory(fullName)) {
         selection = emptySet()
         searchQuery = null

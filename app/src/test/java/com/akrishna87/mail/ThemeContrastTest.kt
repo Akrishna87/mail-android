@@ -20,11 +20,22 @@ class ThemeContrastTest {
     }
 
     @Test
+    fun whiteTextIsReadableOnEveryGradient() {
+        val failures = AppTheme.entries.mapNotNull { theme -> accentGradient(theme)?.let { theme to it } }
+            .flatMap { (theme, stops) -> stops.mapIndexed { i, c -> "${theme.label} stop $i" to contrast(Color.White, c) } }
+            .filter { it.second < 4.5 }
+            .map { "${it.first} = %.2f".format(it.second) }
+        assertTrue(failures.joinToString("\n"), failures.isEmpty())
+    }
+
+    @Test
     fun tintedThemesHaveReadableText() {
         val failures = mutableListOf<String>()
-        for (theme in AppTheme.entries.filter { it.hue != null }) {
-            for (dark in listOf(false, true)) {
-                val s = tintedScheme(theme.hue!!, dark)
+        val schemes = AppTheme.entries.filter { it.hue != null }.flatMap { theme ->
+            listOf(false, true).map { dark -> "${theme.label} ${if (dark) "dark" else "light"}" to tintedScheme(theme.hue!!, dark) }
+        } + ("Night" to NightScheme)
+        for ((label, s) in schemes) {
+            run {
                 val pairs = mapOf(
                     "onSurface/surface" to (s.onSurface to s.surface),
                     "onSurfaceVariant/surface" to (s.onSurfaceVariant to s.surface),
@@ -35,7 +46,7 @@ class ThemeContrastTest {
                 )
                 for ((name, pair) in pairs) {
                     val ratio = contrast(pair.first, pair.second)
-                    if (ratio < 4.5) failures += "${theme.label} ${if (dark) "dark" else "light"} $name = %.2f".format(ratio)
+                    if (ratio < 4.5) failures += "$label $name = %.2f".format(ratio)
                 }
             }
         }

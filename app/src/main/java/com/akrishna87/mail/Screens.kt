@@ -29,7 +29,9 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.RowScope
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.imePadding
@@ -113,11 +115,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.compositeOver
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toArgb
@@ -285,7 +289,6 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     val drawer = rememberDrawerState(DrawerValue.Closed)
     val scope = rememberCoroutineScope()
     val listState = rememberLazyListState()
-    val atTop by remember { derivedStateOf { listState.firstVisibleItemIndex == 0 } }
     var showAccount by remember { mutableStateOf(false) }
     val current = vm.folders.firstOrNull { it.fullName == vm.folder }
 
@@ -314,25 +317,18 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 if (vm.selection.isNotEmpty()) {
                     SelectionBar(vm)
                 } else {
-                    SearchBar(
-                        vm = vm,
-                        onMenu = { scope.launch { drawer.open() } },
-                        onSearch = vm::openSearch,
-                        onAccount = { showAccount = true },
-                    )
+                    Column {
+                        MailboxHeader(
+                            title = vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "Inbox",
+                            vm = vm,
+                            onMenu = { scope.launch { drawer.open() } },
+                            onAccount = { showAccount = true },
+                        )
+                        if (vm.isGmail) CategoryChips(vm)
+                    }
                 }
             },
-            floatingActionButton = {
-                // Like Gmail, the button shrinks to just the pencil once you scroll, and hides while selecting.
-                if (vm.selection.isEmpty()) {
-                    ExtendedFloatingActionButton(
-                        onClick = { vm.compose() },
-                        expanded = atTop,
-                        icon = { Icon(Icons.Default.Edit, contentDescription = null) },
-                        text = { Text("Compose") },
-                    )
-                }
-            },
+            bottomBar = { if (vm.selection.isEmpty()) BottomBar(vm) },
             snackbarHost = { SnackbarHost(snackbar) },
         ) { pad ->
             PullToRefreshBox(
@@ -341,14 +337,6 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 modifier = Modifier.padding(pad).fillMaxSize(),
             ) {
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
-                    item {
-                        Text(
-                            vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "Inbox",
-                            Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
-                            style = MaterialTheme.typography.titleSmall,
-                            color = vm.category?.let { categoryColor(it) } ?: MaterialTheme.colorScheme.primary,
-                        )
-                    }
                     items(vm.messages, key = { it.uid }) { m ->
                         SwipeableRow(vm, m)
                     }
@@ -368,7 +356,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                             )
                         }
                     }
-                    item { Spacer(Modifier.height(96.dp)) } // Room above the Compose button.
+                    item { Spacer(Modifier.height(16.dp)) }
                 }
                 if (vm.loading && !vm.refreshing) LinearProgressIndicator(Modifier.fillMaxWidth())
             }
@@ -378,33 +366,107 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     if (showAccount) AccountDialog(vm, onDismiss = { showAccount = false })
 }
 
-/** Gmail's rounded "Search in mail" bar, with the folder menu and account avatar inside it. */
+/** Design C header: the folder or tab name in the theme's gradient, the menu, and the account avatar. */
 @Composable
-private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onSearch: () -> Unit, onAccount: () -> Unit) {
+private fun MailboxHeader(title: String, vm: MailViewModel, onMenu: () -> Unit, onAccount: () -> Unit) {
     Row(
-        Modifier
-            .statusBarsPadding()
-            .padding(horizontal = 16.dp, vertical = 8.dp)
-            .fillMaxWidth()
-            .height(56.dp)
-            .clip(RoundedCornerShape(28.dp))
-            .background(MaterialTheme.colorScheme.surfaceContainerHigh)
-            .clickable(onClick = onSearch)
-            .padding(horizontal = 4.dp),
+        Modifier.statusBarsPadding().fillMaxWidth().padding(start = 4.dp, end = 16.dp, top = 8.dp, bottom = 4.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         IconButton(onClick = onMenu) { Icon(Icons.Default.Menu, contentDescription = "Folders") }
         Text(
-            "Search in mail",
+            title,
             Modifier.weight(1f),
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
+            style = MaterialTheme.typography.headlineMedium.copy(
+                brush = Brush.linearGradient(LocalAccent.current.map { it.lighten() }),
+                fontWeight = FontWeight.ExtraBold,
+            ),
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
         )
-        Box(Modifier.padding(horizontal = 8.dp).clip(CircleShape).clickable(onClick = onAccount)) {
-            Avatar(vm.account?.name?.ifBlank { null } ?: vm.account?.email.orEmpty(), size = 32.dp)
+        Box(Modifier.clip(CircleShape).clickable(onClick = onAccount)) {
+            Avatar(vm.account?.name?.ifBlank { null } ?: vm.account?.email.orEmpty(), size = 36.dp)
         }
     }
 }
+
+/** Gmail's inbox tabs as chips; the chosen one is filled with the theme gradient. */
+@Composable
+private fun CategoryChips(vm: MailViewModel) {
+    val accent = LocalAccent.current
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(8.dp),
+    ) {
+        MailService.GMAIL_CATEGORIES.forEach { cat ->
+            val chosen = vm.folder == "INBOX" && vm.category == cat && vm.searchQuery == null
+            val unread = vm.categoryUnread[cat] ?: 0
+            Text(
+                if (unread > 0) "${categoryLabel(cat)} \u00B7 $unread" else categoryLabel(cat),
+                Modifier
+                    .clip(RoundedCornerShape(18.dp))
+                    .background(
+                        if (chosen) Brush.linearGradient(accent) else SolidColor(MaterialTheme.colorScheme.surfaceContainerHigh),
+                    )
+                    .clickable { vm.selectCategory(cat) }
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
+                style = MaterialTheme.typography.labelLarge,
+                color = if (chosen) Color.White else categoryColor(cat)?.lighten() ?: MaterialTheme.colorScheme.onSurfaceVariant,
+            )
+        }
+    }
+}
+
+/** Design C's floating bar: Mail, Starred, Compose (raised, in the middle), Search, Settings. */
+@Composable
+private fun BottomBar(vm: MailViewModel) {
+    val accent = LocalAccent.current
+    val onStarred = vm.folders.firstOrNull { it.fullName == vm.folder }?.role == "starred"
+    Box(Modifier.fillMaxWidth().navigationBarsPadding().padding(start = 16.dp, end = 16.dp, top = 24.dp, bottom = 12.dp)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .height(64.dp)
+                .shadow(16.dp, RoundedCornerShape(24.dp))
+                .clip(RoundedCornerShape(24.dp))
+                .background(MaterialTheme.colorScheme.surfaceContainerHigh),
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            BarItem(painterResource(R.drawable.ic_mark_unread), "Mail", selected = !onStarred, onClick = vm::openMailHome)
+            BarItem(rememberVectorPainter(Icons.Default.Star), "Starred", selected = onStarred, onClick = vm::openStarred)
+            Spacer(Modifier.weight(1f))
+            BarItem(rememberVectorPainter(Icons.Default.Search), "Search", selected = false, onClick = vm::openSearch)
+            BarItem(rememberVectorPainter(Icons.Default.Settings), "Settings", selected = false, onClick = vm::openSettings)
+        }
+        Box(
+            Modifier
+                .align(Alignment.TopCenter)
+                .offset(y = (-20).dp)
+                .size(58.dp)
+                .shadow(12.dp, RoundedCornerShape(18.dp))
+                .clip(RoundedCornerShape(18.dp))
+                .background(Brush.linearGradient(accent))
+                .clickable { vm.compose() },
+            contentAlignment = Alignment.Center,
+        ) { Icon(Icons.Default.Edit, contentDescription = "Compose", tint = Color.White) }
+    }
+}
+
+@Composable
+private fun RowScope.BarItem(icon: Painter, label: String, selected: Boolean, onClick: () -> Unit) {
+    val tint = if (selected) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant
+    Column(
+        Modifier.weight(1f).fillMaxHeight().clickable(onClick = onClick),
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center,
+    ) {
+        Icon(icon, contentDescription = null, tint = tint, modifier = Modifier.size(22.dp))
+        Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
+    }
+}
+
+/** A lighter version of a colour, for gradient text and labels on dark backgrounds. */
+private fun Color.lighten(amount: Float = 0.35f): Color = lerp(this, Color.White, amount)
 
 /** Actions for the selected messages, shown in place of the search bar. */
 @OptIn(ExperimentalMaterial3Api::class)
@@ -588,8 +650,10 @@ private fun FolderDrawer(
             Text(
                 "Mailroom",
                 Modifier.padding(start = 28.dp, top = 24.dp, bottom = 16.dp),
-                style = MaterialTheme.typography.titleLarge,
-                color = Color(0xFFD93025),
+                style = MaterialTheme.typography.headlineSmall.copy(
+                    brush = Brush.linearGradient(LocalAccent.current.map { it.lighten() }),
+                    fontWeight = FontWeight.ExtraBold,
+                ),
             )
             var labelsHeading = false
             vm.folders.forEach { f ->
@@ -696,7 +760,14 @@ internal fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
         },
     )
     val selecting = vm.selection.isNotEmpty()
+    val card = RoundedCornerShape(18.dp)
+    val glow = if (!m.seen && m.uid !in vm.selection) {
+        Modifier.border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f), card)
+    } else {
+        Modifier
+    }
     SwipeToDismissBox(
+        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).clip(card).then(glow),
         state = state,
         enableDismissFromStartToEnd = !selecting,
         enableDismissFromEndToStart = !selecting,
@@ -737,10 +808,11 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
             .fillMaxWidth()
             .background(
                 when {
-                    selected -> MaterialTheme.colorScheme.secondaryContainer
-                    unread -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
-                        .compositeOver(MaterialTheme.colorScheme.surface)
-                    else -> MaterialTheme.colorScheme.surface
+                    selected -> SolidColor(MaterialTheme.colorScheme.secondaryContainer)
+                    unread -> Brush.linearGradient(
+                        listOf(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.colorScheme.primaryContainer),
+                    )
+                    else -> SolidColor(MaterialTheme.colorScheme.surfaceContainer)
                 },
             )
             .combinedClickable(onClick = onClick, onLongClick = onSelect)
@@ -1089,10 +1161,11 @@ private fun ThemePicker(current: AppTheme, onPick: (AppTheme) -> Unit) {
         horizontalArrangement = Arrangement.spacedBy(12.dp),
     ) {
         AppTheme.entries.filter { it.available }.forEach { theme ->
-            val swatch = when {
-                theme.hue != null -> hsl(theme.hue, 0.62f, 0.45f)
-                theme == AppTheme.WALLPAPER && Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(context).primary
-                else -> Color(0xFF0B57D0)
+            val swatch: Brush = when {
+                theme == AppTheme.NIGHT -> Brush.linearGradient(accentGradient(theme)!!)
+                theme.hue != null -> SolidColor(hsl(theme.hue, 0.62f, 0.45f))
+                theme == AppTheme.WALLPAPER && Build.VERSION.SDK_INT >= 31 -> SolidColor(dynamicLightColorScheme(context).primary)
+                else -> SolidColor(Color(0xFF0B57D0))
             }
             Column(
                 Modifier.clip(RoundedCornerShape(12.dp)).clickable { onPick(theme) }.padding(6.dp),
@@ -1401,19 +1474,28 @@ private fun plainTextToHtml(text: String): String {
     return """<div class="plain">$linked</div>"""
 }
 
-/** A coloured circle with the sender's first letter, like Gmail. */
+/** A gradient circle with the sender's first letter. */
 @Composable
 private fun Avatar(name: String, size: Dp = 40.dp) {
     val letter = name.firstOrNull { it.isLetterOrDigit() }?.uppercaseChar() ?: '?'
-    val color = AVATAR_COLORS[(name.lowercase().hashCode() and Int.MAX_VALUE) % AVATAR_COLORS.size]
-    Box(Modifier.size(size).clip(CircleShape).background(color), contentAlignment = Alignment.Center) {
+    val colors = AVATAR_GRADIENTS[(name.lowercase().hashCode() and Int.MAX_VALUE) % AVATAR_GRADIENTS.size]
+    Box(
+        Modifier.size(size).clip(CircleShape).background(Brush.linearGradient(colors)),
+        contentAlignment = Alignment.Center,
+    ) {
         Text(letter.toString(), color = Color.White, fontWeight = FontWeight.Bold)
     }
 }
 
-private val AVATAR_COLORS = listOf(
-    Color(0xFF1A73E8), Color(0xFFD93025), Color(0xFF188038), Color(0xFFE37400),
-    Color(0xFF9334E6), Color(0xFF007B83), Color(0xFFC5221F), Color(0xFF5F6368),
+private val AVATAR_GRADIENTS = listOf(
+    listOf(Color(0xFF7C3AED), Color(0xFFC026D3)),
+    listOf(Color(0xFFF97316), Color(0xFFEF4444)),
+    listOf(Color(0xFF10B981), Color(0xFF0EA5E9)),
+    listOf(Color(0xFFF59E0B), Color(0xFFEA580C)),
+    listOf(Color(0xFF2563EB), Color(0xFF0891B2)),
+    listOf(Color(0xFFDB2777), Color(0xFF9333EA)),
+    listOf(Color(0xFF0D9488), Color(0xFF16A34A)),
+    listOf(Color(0xFF6366F1), Color(0xFF3B82F6)),
 )
 
 /** "Name <address>" -> "Name"; a bare address stays as is. */

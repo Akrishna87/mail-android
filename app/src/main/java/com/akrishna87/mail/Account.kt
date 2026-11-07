@@ -86,9 +86,9 @@ class AccountStore(context: Context) {
         get() = Snooze.listFromJson(prefs.getString("snoozes", "[]").orEmpty())
         set(value) = prefs.edit().putString("snoozes", Snooze.listToJson(value)).apply()
 
-    /** Colour theme; Ocean unless chosen otherwise. */
+    /** Colour theme; Night unless chosen otherwise. */
     var theme: AppTheme
-        get() = runCatching { AppTheme.valueOf(prefs.getString("theme", null) ?: "") }.getOrDefault(AppTheme.OCEAN)
+        get() = runCatching { AppTheme.valueOf(prefs.getString("theme", null) ?: "") }.getOrDefault(AppTheme.NIGHT)
         set(value) = prefs.edit().putString("theme", value.name).apply()
 
     fun clear() = prefs.edit().clear().apply()

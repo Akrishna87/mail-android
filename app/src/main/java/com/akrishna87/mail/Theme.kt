@@ -1,5 +1,6 @@
 package com.akrishna87.mail
 
+import android.app.Activity
 import android.os.Build
 import androidx.compose.foundation.isSystemInDarkTheme
 import androidx.compose.material3.ColorScheme
@@ -9,12 +10,18 @@ import androidx.compose.material3.dynamicDarkColorScheme
 import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.lightColorScheme
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.staticCompositionLocalOf
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalView
+import androidx.core.view.WindowCompat
 import kotlin.math.abs
 
 /** Colour themes offered in Settings. [hue] tints the whole app; null means not a tinted theme. */
 enum class AppTheme(val label: String, val hue: Float?) {
+    NIGHT("Night", null),
     OCEAN("Ocean", 212f),
     FOREST("Forest", 150f),
     SUNSET("Sunset", 18f),
@@ -28,18 +35,78 @@ enum class AppTheme(val label: String, val hue: Float?) {
     val available: Boolean get() = this != WALLPAPER || Build.VERSION.SDK_INT >= 31
 }
 
+/** The theme's gradient (title, chips, Compose button, unread glow). White text must stay readable on it. */
+val LocalAccent = staticCompositionLocalOf { NIGHT_ACCENT }
+
 @Composable
 fun MailTheme(theme: AppTheme, content: @Composable () -> Unit) {
-    val dark = isSystemInDarkTheme()
+    // Night is always dark, like its design; the others follow the phone's dark mode.
+    val dark = theme == AppTheme.NIGHT || isSystemInDarkTheme()
     val context = LocalContext.current
     val colors = when {
+        theme == AppTheme.NIGHT -> NightScheme
         theme == AppTheme.WALLPAPER && Build.VERSION.SDK_INT >= 31 ->
             if (dark) dynamicDarkColorScheme(context) else dynamicLightColorScheme(context)
         theme.hue != null -> tintedScheme(theme.hue, dark)
         else -> if (dark) GmailDark else GmailLight
     }
-    MaterialTheme(colorScheme = colors, content = content)
+    val accent = accentGradient(theme) ?: if (theme == AppTheme.WALLPAPER && Build.VERSION.SDK_INT >= 31) {
+        dynamicLightColorScheme(context).let { listOf(it.primary, it.tertiary) }
+    } else {
+        listOf(Color(0xFF0B57D0), Color(0xFF7C3AED))
+    }
+    // Light status bar icons on dark backgrounds and the other way round.
+    val view = LocalView.current
+    if (!view.isInEditMode) {
+        SideEffect {
+            (view.context as? Activity)?.window?.let { window ->
+                WindowCompat.getInsetsController(window, view).apply {
+                    isAppearanceLightStatusBars = !dark
+                    isAppearanceLightNavigationBars = !dark
+                }
+            }
+        }
+    }
+    CompositionLocalProvider(LocalAccent provides accent) {
+        MaterialTheme(colorScheme = colors, content = content)
+    }
 }
+
+/** Gradient stops for Night and the tinted themes; null when it comes from the phone (Wallpaper) or Gmail (Classic). */
+fun accentGradient(theme: AppTheme): List<Color>? = when {
+    theme == AppTheme.NIGHT -> NIGHT_ACCENT
+    theme.hue != null -> listOf(hsl(theme.hue, 0.65f, 0.32f), hsl(theme.hue + 35f, 0.60f, 0.32f), hsl(theme.hue + 70f, 0.60f, 0.27f))
+    else -> null
+}
+
+private val NIGHT_ACCENT = listOf(Color(0xFF2563EB), Color(0xFF7C3AED), Color(0xFFDB2777))
+
+/** Design C: deep navy with violet accents. */
+val NightScheme = darkColorScheme(
+    primary = Color(0xFFA78BFA),
+    onPrimary = Color(0xFF1E1048),
+    primaryContainer = Color(0xFF251C3D),
+    onPrimaryContainer = Color(0xFFEDE9FE),
+    secondary = Color(0xFF93C5FD),
+    onSecondary = Color(0xFF0B1A33),
+    secondaryContainer = Color(0xFF2E2350),
+    onSecondaryContainer = Color(0xFFEDE9FE),
+    tertiary = Color(0xFFF9A8D4),
+    onTertiary = Color(0xFF3B0A24),
+    background = Color(0xFF0B1020),
+    onBackground = Color(0xFFF1F5F9),
+    surface = Color(0xFF0B1020),
+    onSurface = Color(0xFFF1F5F9),
+    surfaceVariant = Color(0xFF1E293B),
+    onSurfaceVariant = Color(0xFF94A3B8),
+    surfaceContainerLowest = Color(0xFF070B16),
+    surfaceContainerLow = Color(0xFF0F1629),
+    surfaceContainer = Color(0xFF111827),
+    surfaceContainerHigh = Color(0xFF1E293B),
+    surfaceContainerHighest = Color(0xFF263449),
+    outline = Color(0xFF475569),
+    outlineVariant = Color(0xFF1F2937),
+)
 
 /**
  * A full colour scheme from one hue: tinted backgrounds and surfaces instead of plain white,

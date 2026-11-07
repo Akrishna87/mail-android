@@ -2,6 +2,7 @@ package com.akrishna87.mail
 
 import android.app.Application
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.ui.test.assertDoesNotExist
 import androidx.compose.ui.test.assertIsDisplayed
 import androidx.compose.ui.test.junit4.createComposeRule
 import androidx.compose.ui.test.longClick
@@ -16,7 +17,7 @@ import org.junit.Rule
 import org.junit.Test
 import org.junit.runner.RunWith
 
-/** Selection on the whole inbox screen (search bar, pull to refresh, drawer, Compose button). */
+/** Selection on the whole inbox screen (header, bottom bar, pull to refresh, drawer). */
 @RunWith(AndroidJUnit4::class)
 class InboxSelectionTest {
     @get:Rule
@@ -30,7 +31,8 @@ class InboxSelectionTest {
         )
         compose.setContent { MaterialTheme { MailApp(vm) } }
 
-        compose.onNodeWithText("Search in mail").assertIsDisplayed()
+        compose.onNodeWithText("Search").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Compose").assertIsDisplayed()
         compose.onNodeWithText("Subject 2").performTouchInput { longClick() }
 
         compose.runOnIdle { assertEquals(setOf(2L), vm.selection) }
@@ -39,5 +41,7 @@ class InboxSelectionTest {
 
         compose.onNodeWithText("Subject 3").performClick()
         compose.runOnIdle { assertEquals(setOf(2L, 3L), vm.selection) }
+        // The bottom bar steps aside while selecting.
+        compose.onNodeWithText("Search").assertDoesNotExist()
     }
 }
