@@ -4,6 +4,7 @@ import android.content.ActivityNotFoundException
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
 import android.os.PowerManager
 import android.text.TextUtils
 import android.text.format.DateUtils
@@ -66,6 +67,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.dynamicLightColorScheme
 import androidx.compose.material3.DropdownMenu
 import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -115,6 +117,7 @@ import androidx.compose.ui.focus.FocusRequester
 import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.compositeOver
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toArgb
@@ -342,8 +345,8 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                         Text(
                             vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "Inbox",
                             Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
-                            style = MaterialTheme.typography.labelLarge,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                            style = MaterialTheme.typography.titleSmall,
+                            color = vm.category?.let { categoryColor(it) } ?: MaterialTheme.colorScheme.primary,
                         )
                     }
                     items(vm.messages, key = { it.uid }) { m ->
@@ -595,7 +598,13 @@ private fun FolderDrawer(
                     MailService.GMAIL_CATEGORIES.forEach { cat ->
                         val unread = vm.categoryUnread[cat] ?: 0
                         NavigationDrawerItem(
-                            icon = { Icon(categoryIcon(cat), contentDescription = null) },
+                            icon = {
+                                Icon(
+                                    categoryIcon(cat),
+                                    contentDescription = null,
+                                    tint = categoryColor(cat) ?: MaterialTheme.colorScheme.primary,
+                                )
+                            },
                             label = { Text(categoryLabel(cat)) },
                             badge = { if (unread > 0) Text(if (cat == "primary") "$unread" else "$unread new") },
                             selected = vm.folder == "INBOX" && vm.category == cat && vm.searchQuery == null,
@@ -726,7 +735,14 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
     Row(
         Modifier
             .fillMaxWidth()
-            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
+            .background(
+                when {
+                    selected -> MaterialTheme.colorScheme.secondaryContainer
+                    unread -> MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.35f)
+                        .compositeOver(MaterialTheme.colorScheme.surface)
+                    else -> MaterialTheme.colorScheme.surface
+                },
+            )
             .combinedClickable(onClick = onClick, onLongClick = onSelect)
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
     ) {
@@ -997,6 +1013,14 @@ private fun SettingsScreen(vm: MailViewModel) {
     ) { pad ->
         Column(Modifier.padding(pad).verticalScroll(rememberScrollState())) {
             Text(
+                "Theme",
+                Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
+                style = MaterialTheme.typography.titleSmall,
+                color = MaterialTheme.colorScheme.primary,
+            )
+            ThemePicker(vm.appTheme, onPick = vm::changeTheme)
+            HorizontalDivider(Modifier.padding(vertical = 8.dp))
+            Text(
                 "Check for new mail",
                 Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                 style = MaterialTheme.typography.titleSmall,
@@ -1051,6 +1075,45 @@ private fun SettingsScreen(vm: MailViewModel) {
                     style = MaterialTheme.typography.bodySmall,
                     color = soft,
                 )
+            }
+        }
+    }
+}
+
+/** Round colour swatches, one per theme, with a check on the chosen one. */
+@Composable
+private fun ThemePicker(current: AppTheme, onPick: (AppTheme) -> Unit) {
+    val context = LocalContext.current
+    Row(
+        Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
+        horizontalArrangement = Arrangement.spacedBy(12.dp),
+    ) {
+        AppTheme.entries.filter { it.available }.forEach { theme ->
+            val swatch = when {
+                theme.hue != null -> hsl(theme.hue, 0.62f, 0.45f)
+                theme == AppTheme.WALLPAPER && Build.VERSION.SDK_INT >= 31 -> dynamicLightColorScheme(context).primary
+                else -> Color(0xFF0B57D0)
+            }
+            Column(
+                Modifier.clip(RoundedCornerShape(12.dp)).clickable { onPick(theme) }.padding(6.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+            ) {
+                Box(
+                    Modifier
+                        .size(44.dp)
+                        .clip(CircleShape)
+                        .background(swatch)
+                        .border(
+                            width = if (theme == AppTheme.CLASSIC) 6.dp else 0.dp,
+                            color = Color.White,
+                            shape = CircleShape,
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    if (theme == current) Icon(Icons.Default.Check, contentDescription = "Chosen", tint = Color.White)
+                }
+                Spacer(Modifier.height(4.dp))
+                Text(theme.label, style = MaterialTheme.typography.labelMedium)
             }
         }
     }

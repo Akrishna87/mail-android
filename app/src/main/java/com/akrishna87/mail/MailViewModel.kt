@@ -93,6 +93,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var syncMode by mutableStateOf(store.syncMode)
         private set
 
+    var appTheme by mutableStateOf(store.theme)
+        private set
+
+    fun changeTheme(theme: AppTheme) {
+        store.theme = theme
+        appTheme = theme
+    }
+
     /** Search shown in place of the folder's messages, or null. */
     var searchQuery by mutableStateOf<String?>(null)
         private set
