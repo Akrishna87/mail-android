@@ -336,7 +336,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
         ) { pad ->
             PullToRefreshBox(
                 isRefreshing = vm.refreshing,
-                onRefresh = vm::refresh,
+                onRefresh = { vm.refresh(quiet = false) },
                 modifier = Modifier.padding(pad).fillMaxSize(),
             ) {
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {

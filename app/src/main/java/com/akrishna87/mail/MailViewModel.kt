@@ -301,10 +301,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Mailbox ------------------------------------------------------------------------------
 
-    fun refresh() {
+    /**
+     * Updates the list from the server. Automatic refreshes (opening the app, coming back to it, new
+     * mail) are [quiet]: the saved list is already showing, so no bar or spinner, only the update.
+     * A pull to refresh shows the spinner until the list is in. Folder counts follow separately.
+     */
+    fun refresh(quiet: Boolean = true) {
         lastRefresh = System.currentTimeMillis()
-        refreshing = true
-        launchTask {
+        val work: suspend () -> Unit = {
             try {
                 val q = searchQuery
                 if (q != null) runSearch(q) else loadMessages(reset = true)
@@ -312,7 +316,21 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 refreshing = false
             }
             startPrefetch()
-            loadFolders()
+            viewModelScope.launch { runCatching { loadFolders() } }
+        }
+        if (quiet) {
+            viewModelScope.launch {
+                try {
+                    work()
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    notice = friendly(e)
+                }
+            }
+        } else {
+            refreshing = true
+            launchTask(block = work)
         }
     }
 
