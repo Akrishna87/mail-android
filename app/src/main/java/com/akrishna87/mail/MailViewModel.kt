@@ -1,7 +1,6 @@
 package com.akrishna87.mail
 
 import android.app.Application
-import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.text.format.DateUtils
@@ -18,7 +17,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
-import net.openid.appauth.AuthorizationService
 import java.io.File
 import java.net.UnknownHostException
 import java.text.DateFormat
@@ -28,7 +26,6 @@ import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface Screen {
     data object Setup : Screen
-    data class Login(val provider: Provider) : Screen
     data object Mailbox : Screen
     data class Reader(val uid: Long) : Screen
     data class Compose(val draft: Draft, val returnTo: Screen) : Screen
@@ -46,13 +43,12 @@ private class PendingChange(val run: suspend () -> Unit, val restore: () -> Unit
 
 class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AccountStore(app)
-    private val mail = MailService(app, store)
+    private val mail = MailService(app)
 
     // Background work (downloading ahead, unread counts, folders) has its own connection, so opening
     // an email never waits behind it: one shared connection made a tap wait up to 15 seconds.
-    private val background = MailService(app, store)
+    private val background = MailService(app)
     private val cache = MailCache(app)
-    private val authService = AuthorizationService(app)
 
     var account by mutableStateOf(store.load())
         private set
@@ -64,7 +60,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         private set
 
     /** Gmail inbox tab shown (primary, promotions, ...), or null for the whole folder. */
-    var category by mutableStateOf(if (account?.provider == Provider.GMAIL) "primary" else null)
+    var category by mutableStateOf<String?>("primary")
         private set
 
     /** Only unread emails in the current folder or tab, or everything again. */
@@ -75,7 +71,6 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var categoryUnread by mutableStateOf(mapOf<String, Int>())
         private set
 
-    val isGmail: Boolean get() = account?.provider == Provider.GMAIL
     var messages by mutableStateOf(listOf<MessageSummary>())
         private set
     var hasMore by mutableStateOf(false)
@@ -139,7 +134,6 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private var running = 0
     private var lastRefresh = 0L
     private var prefetchJob: Job? = null
-    private var pendingMicrosoft: Pair<String, String>? = null
     private var pendingChange: PendingChange? = null
 
     init {
@@ -166,7 +160,6 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     override fun onCleared() {
-        authService.dispose()
         Thread {
             mail.close()
             background.close()
@@ -211,16 +204,11 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         if (selection.isNotEmpty()) return clearSelection()
         if (screen == Screen.Search) return clearSearch()
         screen = when (val s = screen) {
-            is Screen.Login -> Screen.Setup
             is Screen.Reader -> listScreen()
             is Screen.Compose -> s.returnTo
             Screen.Settings -> Screen.Mailbox
             else -> s
         }
-    }
-
-    fun chooseProvider(provider: Provider) {
-        screen = Screen.Login(provider)
     }
 
     /** A tapped new-mail notification: show the inbox with the new mail, and open [uid] if given. */
@@ -243,29 +231,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Sign in / out ------------------------------------------------------------------------
 
-    fun signInWithPassword(provider: Provider, name: String, email: String, password: String) = launchTask {
+    fun signInWithPassword(name: String, email: String, password: String) = launchTask {
         // Google shows app passwords with spaces; IMAP expects them without.
-        val account = Account(provider, email.trim(), name.trim(), password.replace(" ", ""))
+        val account = Account(email.trim(), name.trim(), password.replace(" ", ""))
         mail.verify(account)
-        finishSignIn(account)
-    }
-
-    fun microsoftSignInIntent(name: String, email: String): Intent {
-        pendingMicrosoft = name.trim() to email.trim()
-        return MicrosoftAuth.signInIntent(authService, email.trim())
-    }
-
-    fun completeMicrosoftSignIn(data: Intent?) = launchTask {
-        val (name, email) = pendingMicrosoft ?: return@launchTask
-        if (data == null) throw Exception("Microsoft sign-in was cancelled")
-        store.authState = MicrosoftAuth.completeSignIn(authService, data)
-        val account = Account(Provider.MICROSOFT, email, name)
-        try {
-            mail.verify(account)
-        } catch (e: Exception) {
-            store.authState = ""
-            throw e
-        }
         finishSignIn(account)
     }
 
@@ -399,7 +368,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     }
 
     /** Gmail opens the inbox on the Primary tab, like the Gmail app. */
-    private fun defaultCategory(f: String): String? = if (f == "INBOX" && isGmail) "primary" else null
+    private fun defaultCategory(f: String): String? = if (f == "INBOX") "primary" else null
 
     /** Cache key of the list shown for [f]: a Gmail inbox tab, and the Unread filter, have their own. */
     private fun listKey(f: String): String =
@@ -454,7 +423,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val a = account ?: return
         folders = background.folders(a)
         withContext(Dispatchers.IO) { cache.saveFolders(folders) }
-        if (isGmail) categoryUnread = runCatching { background.categoryUnread(a) }.getOrDefault(categoryUnread)
+        categoryUnread = runCatching { background.categoryUnread(a) }.getOrDefault(categoryUnread)
     }
 
     private suspend fun loadMessages(reset: Boolean) {
@@ -937,7 +906,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         m.date?.let { DateFormat.getDateTimeInstance(DateFormat.MEDIUM, DateFormat.SHORT).format(it) }.orEmpty()
 
     private companion object {
-        const val MAX_ATTACHMENTS_BYTES = 25L * 1024 * 1024 // Gmail, Yahoo and Outlook all allow about 25 MB.
+        const val MAX_ATTACHMENTS_BYTES = 25L * 1024 * 1024 // Gmail allows 25 MB.
         const val PREFETCH_COUNT = 50 // The whole first page of the list.
         const val PREFETCH_BATCH = 5
         const val PREFETCH_MAX_BYTES = 512 * 1024 // Big messages download when opened, not ahead.

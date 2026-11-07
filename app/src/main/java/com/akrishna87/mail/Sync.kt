@@ -95,13 +95,9 @@ object MailSync {
                 .also { cache.saveList("INBOX", it) }
         }
 
-        // Gmail: also save the Primary tab, and like Gmail only notify about Primary mail.
+        // Also save the Primary tab, and like Gmail only notify about Primary mail.
         var primary: Set<Long>? = null
-        val primaryUids = if (account.provider == Provider.GMAIL) {
-            runCatching { mail.gmailQueryUids(account, "INBOX", "in:inbox category:primary") }.getOrNull()
-        } else {
-            null
-        }
+        val primaryUids = runCatching { mail.gmailQueryUids(account, "INBOX", "in:inbox category:primary") }.getOrNull()
         if (primaryUids != null) {
             val uids = primaryUids.take(MailService.PAGE_SIZE)
             primary = uids.toSet()

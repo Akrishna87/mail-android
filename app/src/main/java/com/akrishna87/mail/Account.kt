@@ -4,24 +4,18 @@ import android.content.Context
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKey
 
-enum class Provider(
-    val label: String,
-    val imapHost: String,
-    val smtpHost: String,
-    val smtpPort: Int,
-    val usesOAuth: Boolean,
-) {
-    GMAIL("Gmail", "imap.gmail.com", "smtp.gmail.com", 465, false),
-    YAHOO("Yahoo Mail", "imap.mail.yahoo.com", "smtp.mail.yahoo.com", 465, false),
-    MICROSOFT("Outlook / Hotmail", "outlook.office365.com", "smtp-mail.outlook.com", 587, true),
+/** Gmail's servers; the app only works with Gmail. */
+object Gmail {
+    const val IMAP_HOST = "imap.gmail.com"
+    const val SMTP_HOST = "smtp.gmail.com"
+    const val SMTP_PORT = 465
 }
 
-/** App password for Gmail/Yahoo; empty for Microsoft, whose tokens live in [AccountStore.authState]. */
+/** A Gmail account signed in with an app password. */
 data class Account(
-    val provider: Provider,
     val email: String,
     val name: String,
-    val password: String = "",
+    val password: String,
 )
 
 /** Stores the signed-in account in encrypted preferences on the device. */
@@ -35,28 +29,25 @@ class AccountStore(context: Context) {
     )
 
     fun load(): Account? {
-        val provider = prefs.getString("provider", null) ?: return null
+        // Older versions also offered Yahoo and Outlook; those sign-ins no longer work, so they show sign-in again.
+        if (prefs.getString("provider", "GMAIL") != "GMAIL") return null
+        val password = prefs.getString("password", null)?.takeIf { it.isNotEmpty() } ?: return null
         return Account(
-            provider = Provider.valueOf(provider),
             email = prefs.getString("email", "").orEmpty(),
             name = prefs.getString("name", "").orEmpty(),
-            password = prefs.getString("password", "").orEmpty(),
+            password = password,
         )
     }
 
     fun save(account: Account) {
         prefs.edit()
-            .putString("provider", account.provider.name)
+            .remove("provider")
+            .remove("authState")
             .putString("email", account.email)
             .putString("name", account.name)
             .putString("password", account.password)
             .apply()
     }
-
-    /** Serialized AppAuth state (Microsoft refresh/access tokens). */
-    var authState: String
-        get() = prefs.getString("authState", "").orEmpty()
-        set(value) = prefs.edit().putString("authState", value).apply()
 
     /** INBOX UIDNEXT seen by the last new-mail check; 0 means "not checked yet". */
     var lastUidNext: Long

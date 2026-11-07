@@ -100,7 +100,7 @@ class SnoozeWorker(context: Context, params: WorkerParameters) : CoroutineWorker
     override suspend fun doWork(): Result {
         val store = AccountStore(applicationContext)
         val account = store.load() ?: return Result.success()
-        val mail = MailService(applicationContext, store)
+        val mail = MailService(applicationContext)
         return try {
             Snoozes.returnDue(applicationContext, store, mail, account)
             Snoozes.schedule(applicationContext)

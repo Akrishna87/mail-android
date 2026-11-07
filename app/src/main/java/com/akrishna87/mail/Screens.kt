@@ -85,7 +85,6 @@ import androidx.compose.material3.ModalNavigationDrawer
 import androidx.compose.material3.NavigationDrawerItem
 import androidx.compose.material3.NavigationDrawerItemDefaults
 import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedCard
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Scaffold
@@ -177,8 +176,7 @@ fun MailApp(vm: MailViewModel) {
     BackHandler(enabled = vm.canGoBack) { vm.back() }
 
     when (val s = vm.screen) {
-        Screen.Setup -> SetupScreen(vm)
-        is Screen.Login -> LoginScreen(vm, s.provider, snackbar)
+        Screen.Setup -> SetupScreen(vm, snackbar)
         Screen.Mailbox -> MailboxScreen(vm, snackbar)
         is Screen.Reader -> ReaderScreen(vm, s.uid, snackbar)
         is Screen.Compose -> ComposeScreen(vm, s.draft, snackbar)
@@ -189,41 +187,17 @@ fun MailApp(vm: MailViewModel) {
 
 // --- Setup & sign in ----------------------------------------------------------------------------
 
+/** Sign-in: Gmail with an app password. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SetupScreen(vm: MailViewModel) {
-    Scaffold(topBar = { TopAppBar(title = { Text("Add your email account") }) }) { pad ->
-        Column(
-            Modifier.padding(pad).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
-        ) {
-            Provider.entries.forEach { p ->
-                OutlinedCard(onClick = { vm.chooseProvider(p) }, modifier = Modifier.fillMaxWidth()) {
-                    Text(p.label, Modifier.padding(20.dp), style = MaterialTheme.typography.titleMedium)
-                }
-            }
-        }
-    }
-}
-
-@OptIn(ExperimentalMaterial3Api::class)
-@Composable
-private fun LoginScreen(vm: MailViewModel, provider: Provider, snackbar: SnackbarHostState) {
+private fun SetupScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
     var name by rememberSaveable { mutableStateOf("") }
     var email by rememberSaveable { mutableStateOf("") }
     var password by rememberSaveable { mutableStateOf("") }
     val uri = LocalUriHandler.current
-    val microsoftLauncher = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        vm.completeMicrosoftSignIn(it.data)
-    }
 
     Scaffold(
-        topBar = {
-            TopAppBar(
-                title = { Text(provider.label) },
-                navigationIcon = { BackButton(vm::back) },
-            )
-        },
+        topBar = { TopAppBar(title = { Text("Sign in to Gmail") }) },
         snackbarHost = { SnackbarHost(snackbar) },
     ) { pad ->
         Column(
@@ -234,50 +208,33 @@ private fun LoginScreen(vm: MailViewModel, provider: Provider, snackbar: Snackba
             OutlinedTextField(name, { name = it }, label = { Text("Your name") }, singleLine = true, modifier = Modifier.fillMaxWidth())
             OutlinedTextField(
                 email, { email = it },
-                label = { Text("Email address") },
+                label = { Text("Gmail address") },
                 singleLine = true,
                 keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Email),
                 modifier = Modifier.fillMaxWidth(),
             )
-
-            when (provider) {
-                Provider.MICROSOFT -> {
-                    if (MicrosoftAuth.isConfigured) {
-                        Text("You'll sign in on Microsoft's own page.")
-                        Button(
-                            onClick = { microsoftLauncher.launch(vm.microsoftSignInIntent(name, email)) },
-                            enabled = email.isNotBlank() && !vm.loading,
-                            modifier = Modifier.fillMaxWidth(),
-                        ) { Text("Sign in with Microsoft") }
-                    } else {
-                        Text("Microsoft sign-in isn't set up in this build yet. See the README for the one-time setup.")
-                    }
-                }
-                else -> {
-                    OutlinedTextField(
-                        password, { password = it },
-                        label = { Text("App password") },
-                        singleLine = true,
-                        visualTransformation = PasswordVisualTransformation(),
-                        keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                        modifier = Modifier.fillMaxWidth(),
-                    )
-                    val (help, url) = if (provider == Provider.GMAIL) {
-                        "Gmail needs an app password, not your normal password. Turn on 2-Step Verification, " +
-                            "then create one on Google's app passwords page." to "https://myaccount.google.com/apppasswords"
-                    } else {
-                        "Yahoo needs an app password, not your normal password. Create one under " +
-                            "Account security → Generate app password." to "https://login.yahoo.com/account/security"
-                    }
-                    Text(help, style = MaterialTheme.typography.bodyMedium)
-                    TextButton(onClick = { uri.openUri(url) }) { Text("Open app password page") }
-                    Button(
-                        onClick = { vm.signInWithPassword(provider, name, email, password) },
-                        enabled = email.isNotBlank() && password.isNotBlank() && !vm.loading,
-                        modifier = Modifier.fillMaxWidth(),
-                    ) { Text("Sign in") }
-                }
+            OutlinedTextField(
+                password, { password = it },
+                label = { Text("App password") },
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation(),
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
+                modifier = Modifier.fillMaxWidth(),
+            )
+            Text(
+                "Gmail needs an app password, not your normal password. It needs 2-Step Verification " +
+                    "turned on. The page below opens in your browser: sign in, enter a name such as " +
+                    "Mailroom, tap Create, and copy the 16-letter password here.",
+                style = MaterialTheme.typography.bodyMedium,
+            )
+            TextButton(onClick = { uri.openUri("https://myaccount.google.com/apppasswords") }) {
+                Text("Open app password page")
             }
+            Button(
+                onClick = { vm.signInWithPassword(name, email, password) },
+                enabled = email.isNotBlank() && password.isNotBlank() && !vm.loading,
+                modifier = Modifier.fillMaxWidth(),
+            ) { Text("Sign in") }
         }
     }
 }
@@ -418,7 +375,7 @@ private fun CategoryChips(vm: MailViewModel, onJumpToUnread: () -> Unit) {
             style = MaterialTheme.typography.labelLarge,
             color = if (on) MaterialTheme.colorScheme.onPrimaryContainer else MaterialTheme.colorScheme.onSurfaceVariant,
         )
-        if (vm.isGmail) MailService.GMAIL_CATEGORIES.forEach { cat ->
+        MailService.GMAIL_CATEGORIES.forEach { cat ->
             val chosen = vm.folder == "INBOX" && vm.category == cat && vm.searchQuery == null
             val unread = vm.categoryUnread[cat] ?: 0
             Text(
@@ -534,9 +491,7 @@ internal fun SelectionBar(vm: MailViewModel) {
                         onClick = { menu = false; vm.starSelected(!allStarred) },
                     )
                     DropdownMenuItem(text = { Text("Move to") }, onClick = { menu = false; dialog = MessageDialog.MoveTo })
-                    if (vm.isGmail) {
-                        DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
-                    }
+                    DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
                 }
             }
         },
@@ -681,7 +636,7 @@ private fun FolderDrawer(
             )
             var labelsHeading = false
             vm.folders.forEach { f ->
-                if (vm.isGmail && f.role == "inbox") {
+                if (f.role == "inbox") {
                     // Gmail's inbox tabs take the place of a single Inbox, like in the Gmail app.
                     MailService.GMAIL_CATEGORIES.forEach { cat ->
                         val unread = vm.categoryUnread[cat] ?: 0
@@ -1301,9 +1256,7 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                         IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
                         DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
                             DropdownMenuItem(text = { Text("Move to") }, onClick = { menu = false; dialog = MessageDialog.MoveTo })
-                            if (vm.isGmail) {
-                                DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
-                            }
+                            DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
                         }
                     }
                 },

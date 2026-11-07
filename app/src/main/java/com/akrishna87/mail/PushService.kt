@@ -39,7 +39,7 @@ class PushService : Service() {
     override fun onCreate() {
         super.onCreate()
         store = AccountStore(this)
-        mail = MailService(this, store)
+        mail = MailService(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {

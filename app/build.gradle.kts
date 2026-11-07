@@ -18,9 +18,6 @@ android {
         versionCode = buildNumber
         versionName = "0.1.$buildNumber"
 
-        val msClientId = providers.gradleProperty("msClientId").getOrElse("")
-        buildConfigField("String", "MS_CLIENT_ID", "\"$msClientId\"")
-        manifestPlaceholders["appAuthRedirectScheme"] = "com.akrishna87.mail"
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
@@ -73,7 +70,6 @@ dependencies {
     implementation("androidx.core:core-ktx:1.15.0")
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.security:security-crypto:1.1.0-alpha06")
-    implementation("net.openid:appauth:0.11.1")
     implementation("com.sun.mail:android-mail:1.6.8")
     implementation("com.sun.mail:android-activation:1.6.8")
 

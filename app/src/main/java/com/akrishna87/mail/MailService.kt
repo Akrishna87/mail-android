@@ -94,15 +94,12 @@ data class Attachment(val uri: String, val name: String, val size: Long, val mim
 data class Page(val messages: List<MessageSummary>, val hasMore: Boolean)
 
 /**
- * Talks to the provider's IMAP and SMTP servers directly from the phone.
+ * Talks to Gmail's IMAP and SMTP servers directly from the phone.
  *
  * Mobile round trips are slow, so it keeps one connection and the current folder open,
  * and fetches each message body with a single command.
  */
-class MailService(private val context: Context, private val store: AccountStore) {
-
-    private suspend fun secret(account: Account): String =
-        if (account.provider.usesOAuth) MicrosoftAuth.freshToken(context, store) else account.password
+class MailService(private val context: Context) {
 
     private fun session(account: Account): Session {
         val p = Properties()
@@ -115,16 +112,7 @@ class MailService(private val context: Context, private val store: AccountStore)
         p["mail.smtp.timeout"] = "30000"
         p["mail.smtp.auth"] = "true"
         p["mail.smtp.ssl.checkserveridentity"] = "true"
-        if (account.provider.smtpPort == 465) {
-            p["mail.smtp.ssl.enable"] = "true"
-        } else {
-            p["mail.smtp.starttls.enable"] = "true"
-            p["mail.smtp.starttls.required"] = "true"
-        }
-        if (account.provider.usesOAuth) {
-            p["mail.imaps.auth.mechanisms"] = "XOAUTH2"
-            p["mail.smtp.auth.mechanisms"] = "XOAUTH2"
-        }
+        p["mail.smtp.ssl.enable"] = "true"
         return Session.getInstance(p).apply {
             debugOut = PrintStream(trace, true)
             debug = true
@@ -230,7 +218,7 @@ class MailService(private val context: Context, private val store: AccountStore)
         discard()
         val session = session(account)
         val imapStore = session.getStore("imaps") as IMAPStore
-        imapStore.connect(account.provider.imapHost, 993, account.email, secret(account))
+        imapStore.connect(Gmail.IMAP_HOST, 993, account.email, account.password)
         connection = imapStore
         connectionSession = session
         connectedAccount = account
@@ -311,19 +299,12 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     /**
      * Searches like Gmail. On Gmail the query goes to Google unchanged (X-GM-RAW), so every Gmail
-     * operator works, and it covers All Mail. Elsewhere [SearchQuery] turns it into an IMAP search
-     * of [folderName]. Returns the folder searched and the matching UIDs, newest first.
+     * operator works, and it covers All Mail ([folderName] if there is none).
+     * Returns the folder searched and the matching UIDs, newest first.
      */
     suspend fun search(account: Account, folderName: String, query: String): Pair<String, List<Long>> = imap(account) { s ->
-        if (s.hasCapability("X-GM-EXT-1")) {
-            val all = folderWithRole(s, "all")?.fullName ?: folderName
-            all to gmailSearch(selected(s, all), query).sortedDescending()
-        } else {
-            val f = selected(s, folderName)
-            val found = f.search(SearchQuery.toSearchTerm(query))
-            f.fetch(found, FetchProfile().apply { add(UIDFolder.FetchProfileItem.UID) })
-            folderName to found.map { f.getUID(it) }.sortedDescending()
-        }
+        val all = folderWithRole(s, "all")?.fullName ?: folderName
+        all to gmailSearch(selected(s, all), query).sortedDescending()
     }
 
     /** UIDs in [folderName] matching a Gmail search (e.g. category:primary), newest first. */
@@ -469,8 +450,7 @@ class MailService(private val context: Context, private val store: AccountStore)
     // --- Writing ------------------------------------------------------------------------------
 
     suspend fun send(account: Account, draft: Draft) {
-        val secret = secret(account)
-        val msg = withContext(Dispatchers.IO) {
+        withContext(Dispatchers.IO) {
             val session = session(account)
             val msg = MimeMessage(session)
             msg.setFrom(InternetAddress(account.email, account.name.ifBlank { null }, "UTF-8"))
@@ -492,26 +472,14 @@ class MailService(private val context: Context, private val store: AccountStore)
             msg.saveChanges()
 
             val transport = session.getTransport("smtp")
-            transport.connect(account.provider.smtpHost, account.provider.smtpPort, account.email, secret)
+            transport.connect(Gmail.SMTP_HOST, Gmail.SMTP_PORT, account.email, account.password)
             try {
                 transport.sendMessage(msg, msg.allRecipients)
             } finally {
                 transport.close()
             }
-            msg
         }
-
-        // Gmail and Outlook save sent mail automatically; Yahoo does not.
-        if (account.provider == Provider.YAHOO) {
-            runCatching {
-                imap(account) { s ->
-                    folderWithRole(s, "sent")?.let { sent ->
-                        msg.setFlag(Flags.Flag.SEEN, true)
-                        sent.appendMessages(arrayOf(msg))
-                    }
-                }
-            }
-        }
+        // Gmail saves sent mail in Sent by itself.
     }
 
     /** Moves the messages to Trash, or deletes them permanently when already in Trash. */

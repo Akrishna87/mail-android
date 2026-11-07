@@ -1,7 +1,6 @@
 # Mailroom for Android
 
-An email app for Android with a Gmail-style design, for **Gmail** and **Yahoo Mail**
-(**Outlook / Hotmail** once Microsoft sign-in is set up, see below).
+A **Gmail** app for Android with a Gmail-style design.
 Built for personal use: no server, no ads, and your password stays encrypted on your phone.
 
 ## Install
@@ -15,16 +14,20 @@ To update, install the newest release the same way; your account stays signed in
 
 ## Signing in
 
-| Provider | How |
-|---|---|
-| Gmail | Use an **app password**, not your normal password. Turn on 2-Step Verification, then create one at <https://myaccount.google.com/apppasswords>. |
-| Yahoo Mail | Use an **app password**. Create one at <https://login.yahoo.com/account/security> → *Generate app password*. |
-| Outlook / Hotmail | Not available yet: needs the one-time setup below. |
+Mailroom signs in with a Gmail **app password**, not your normal password.
+The Gmail app can't make one, but your phone's browser can:
+
+1. Make sure 2-Step Verification is on for your Google account (<https://myaccount.google.com/security>).
+2. Open <https://myaccount.google.com/apppasswords> in the browser (the sign-in screen has a button for it) and sign in.
+3. Type a name such as `Mailroom`, tap **Create**, and copy the 16-letter password.
+4. In Mailroom, enter your name, Gmail address and that password, and tap **Sign in**.
+
+The password stays encrypted on your phone. To revoke it, delete it on the same page.
 
 ## Features
 
 **Inbox**
-- Gmail's tabs: **Primary, Promotions, Social, Updates, Forums**, sorted exactly as Gmail sorts them, with unread counts (Gmail accounts)
+- Gmail's tabs: **Primary, Promotions, Social, Updates, Forums**, sorted exactly as Gmail sorts them, with unread counts
 - All folders and labels in the ☰ menu
 - Sender avatars, a preview line, unread mail highlighted, and a star you can tap
 - Swipe to archive (or delete outside the inbox), with **Undo**
@@ -41,8 +44,7 @@ To update, install the newest release the same way; your account stays signed in
 **Writing**: To, Cc, Bcc, attachments (up to 25 MB in total).
 
 **Search** like Gmail: recent searches, sender suggestions, filter chips (Unread, Starred, Has attachment, dates).
-On Gmail, every Gmail search works (`from:`, `subject:`, `has:attachment`, `is:unread`, `older_than:1y`, `OR`, ...) across all mail.
-On Yahoo the common ones work within the current folder.
+Every Gmail search works (`from:`, `subject:`, `has:attachment`, `is:unread`, `older_than:1y`, `OR`, ...) across all mail.
 
 **Snooze**: later today, tomorrow, this weekend or next week. Snoozed mail waits in a
 *Snoozed by Mailroom* label and comes back to the inbox unread, with a notification. (Gmail does not let other
@@ -53,19 +55,8 @@ the app is open. Background checks also download new mail, so it is there when y
 per email (Primary only, like Gmail); tapping it opens that email. For reliable checks, tap **Allow background use**
 in Settings.
 
-**Themes** (☰ → Settings → Theme): Ocean, Forest, Sunset, Lavender, Rose, your wallpaper's colours, or Classic
+**Themes** (☰ → Settings → Theme): Night (the default), Ocean, Forest, Sunset, Lavender, Rose, your wallpaper's colours, or Classic
 Gmail white; each with a dark mode.
-
-## One-time Microsoft sign-in setup
-
-Microsoft requires every mail app to be registered. This is free.
-
-1. Go to <https://entra.microsoft.com> and sign in → **App registrations** → **New registration**.
-   (If it asks for a directory first, Microsoft needs a free Azure account.)
-2. Name: `Mailroom`. Supported account types: **Accounts in any organizational directory and personal Microsoft accounts**.
-3. Redirect URI: platform **Public client/native (mobile & desktop)**, value `com.akrishna87.mail://oauth2redirect`.
-4. Click **Register** and copy the **Application (client) ID**.
-5. Put it in `gradle.properties` as `msClientId=<your id>` and push. The next build has Microsoft sign-in enabled.
 
 ## Development
 
@@ -90,4 +81,4 @@ so every published APK installs as an update over the previous one.
 Kotlin and Jetpack Compose (Material 3). JavaMail talks IMAP/SMTP directly from the phone, keeping one connection
 and the current folder open; Gmail tabs and search use Gmail's IMAP search extension (`X-GM-RAW`). Push uses IMAP
 IDLE in a foreground service; periodic checks and snooze returns use WorkManager. Mail is cached on the phone, and
-the password is kept in EncryptedSharedPreferences. AppAuth handles Microsoft sign-in.
+the app password is kept in EncryptedSharedPreferences.

@@ -12,7 +12,7 @@ class NewMailWorker(context: Context, params: WorkerParameters) : CoroutineWorke
     override suspend fun doWork(): Result {
         val store = AccountStore(applicationContext)
         val account = store.load() ?: return Result.success()
-        val mail = MailService(applicationContext, store)
+        val mail = MailService(applicationContext)
         return try {
             MailSync.syncInbox(applicationContext, store, mail, account)
             Result.success()
