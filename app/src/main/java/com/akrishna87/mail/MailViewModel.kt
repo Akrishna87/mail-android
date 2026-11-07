@@ -432,7 +432,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 // A Gmail tab is a Gmail search of the inbox; its UIDs are fetched once and shown in pages.
                 if (reset || categoryUids.isEmpty()) categoryUids = mail.gmailQueryUids(a, f, "in:inbox category:$cat")
                 val pageUids = categoryUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
-                Page(mail.summaries(a, f, pageUids), categoryUids.size > page * MailService.PAGE_SIZE)
+                val rows = mail.summaries(a, f, pageUids)
+                // Gmail's search found these emails; say so if some couldn't be loaded rather than hide them.
+                if (rows.size < pageUids.size) notice = "${pageUids.size - rows.size} emails in this tab couldn't be loaded. Pull down to retry."
+                Page(rows, categoryUids.size > page * MailService.PAGE_SIZE)
             } catch (e: MessagingException) {
                 // Rather than an empty screen, show the whole inbox and say why the tab didn't load.
                 notice = "Couldn't load ${cat.replaceFirstChar { it.uppercase() }}, showing the whole inbox. ${friendly(e)}"

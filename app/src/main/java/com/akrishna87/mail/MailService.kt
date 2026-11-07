@@ -253,6 +253,16 @@ class MailService(private val context: Context, private val store: AccountStore)
         return f
     }
 
+    /**
+     * The messages for these UIDs. A NOOP first makes the server report mail that arrived since the
+     * folder was opened: Gmail may hold that news back, and without it the newest UIDs map to no
+     * message and were silently left out (seen on a phone: new promotions missing from the list).
+     */
+    private fun byUid(f: IMAPFolder, uids: List<Long>): Array<Message> {
+        f.doCommand { it.noop(); null }
+        return f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+    }
+
     // --- Reading ------------------------------------------------------------------------------
 
     suspend fun verify(account: Account) = imap(account) { }
@@ -324,7 +334,7 @@ class MailService(private val context: Context, private val store: AccountStore)
     suspend fun summaries(account: Account, folderName: String, uids: List<Long>): List<MessageSummary> = imap(account) { s ->
         if (uids.isEmpty()) return@imap emptyList()
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         val profile = FetchProfile().apply {
             add(FetchProfile.Item.ENVELOPE)
             add(FetchProfile.Item.FLAGS)
@@ -460,7 +470,7 @@ class MailService(private val context: Context, private val store: AccountStore)
     suspend fun delete(account: Account, folderName: String, uids: List<Long>) = imap(account) { s ->
         val trash = folderWithRole(s, "trash")
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         if (msgs.isEmpty()) return@imap
         if (trash != null && trash.fullName != f.fullName) {
             move(s, f, msgs, trash)
@@ -475,21 +485,21 @@ class MailService(private val context: Context, private val store: AccountStore)
         val target = folderWithRole(s, "archive") ?: folderWithRole(s, "all")
             ?: throw MessagingException("This account has no Archive folder")
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         if (msgs.isNotEmpty()) move(s, f, msgs, target)
     }
 
     /** Moves messages to another folder (for Gmail: replaces this label with that one). */
     suspend fun moveTo(account: Account, folderName: String, uids: List<Long>, target: String) = imap(account) { s ->
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         if (msgs.isNotEmpty()) move(s, f, msgs, s.getFolder(target))
     }
 
     /** Gmail: adds a label (copying to a label's folder adds that label and keeps the others). */
     suspend fun labelAs(account: Account, folderName: String, uids: List<Long>, label: String) = imap(account) { s ->
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         if (msgs.isNotEmpty()) f.copyMessages(msgs, s.getFolder(label))
     }
 
@@ -501,7 +511,7 @@ class MailService(private val context: Context, private val store: AccountStore)
         val target = s.getFolder(SNOOZED_FOLDER) as IMAPFolder
         if (!target.exists()) target.create(Folder.HOLDS_MESSAGES)
         val f = selected(s, folderName)
-        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        val msgs = byUid(f, uids)
         f.fetch(msgs, FetchProfile().apply { add("Message-ID") })
         val ids = msgs.mapNotNull { m -> m.getHeader("Message-ID")?.firstOrNull()?.let { f.getUID(m) to it } }.toMap()
         val movable = msgs.filter { f.getUID(it) in ids }.toTypedArray()
