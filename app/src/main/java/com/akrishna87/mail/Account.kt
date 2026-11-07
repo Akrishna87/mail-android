@@ -81,5 +81,10 @@ class AccountStore(context: Context) {
         get() = prefs.getString("recentSearches", "").orEmpty().split('\n').filter { it.isNotBlank() }
         set(value) = prefs.edit().putString("recentSearches", value.joinToString("\n")).apply()
 
+    /** Messages snoozed by this app, waiting to return to the inbox. */
+    var snoozes: List<Snooze>
+        get() = Snooze.listFromJson(prefs.getString("snoozes", "[]").orEmpty())
+        set(value) = prefs.edit().putString("snoozes", Snooze.listToJson(value)).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

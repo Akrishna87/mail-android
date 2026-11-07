@@ -38,6 +38,7 @@ import javax.mail.internet.MimeBodyPart
 import javax.mail.internet.MimeMessage
 import javax.mail.internet.MimeMultipart
 import javax.mail.internet.MimeUtility
+import javax.mail.search.MessageIDTerm
 import javax.mail.util.ByteArrayDataSource
 
 data class MailFolder(val fullName: String, val name: String, val role: String?, val unread: Int)
@@ -250,6 +251,17 @@ class MailService(private val context: Context, private val store: AccountStore)
         }
     }
 
+    /** UIDs in [folderName] matching a Gmail search (e.g. category:primary), newest first. */
+    suspend fun gmailQueryUids(account: Account, folderName: String, query: String): List<Long> = imap(account) { s ->
+        gmailSearch(selected(s, folderName), query).sortedDescending()
+    }
+
+    /** Unread count of each Gmail inbox category (Primary, Promotions, ...). */
+    suspend fun categoryUnread(account: Account): Map<String, Int> = imap(account) { s ->
+        val f = selected(s, "INBOX")
+        GMAIL_CATEGORIES.associateWith { gmailSearch(f, "in:inbox category:$it is:unread").size }
+    }
+
     /** List rows for [uids] in [folderName], newest first. */
     suspend fun summaries(account: Account, folderName: String, uids: List<Long>): List<MessageSummary> = imap(account) { s ->
         if (uids.isEmpty()) return@imap emptyList()
@@ -403,6 +415,47 @@ class MailService(private val context: Context, private val store: AccountStore)
         if (msgs.isNotEmpty()) move(s, f, msgs, target)
     }
 
+    /** Moves messages to another folder (for Gmail: replaces this label with that one). */
+    suspend fun moveTo(account: Account, folderName: String, uids: List<Long>, target: String) = imap(account) { s ->
+        val f = selected(s, folderName)
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        if (msgs.isNotEmpty()) move(s, f, msgs, s.getFolder(target))
+    }
+
+    /** Gmail: adds a label (copying to a label's folder adds that label and keeps the others). */
+    suspend fun labelAs(account: Account, folderName: String, uids: List<Long>, label: String) = imap(account) { s ->
+        val f = selected(s, folderName)
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        if (msgs.isNotEmpty()) f.copyMessages(msgs, s.getFolder(label))
+    }
+
+    /**
+     * Moves messages into the Snoozed folder (created if needed) and returns uid -> Message-ID,
+     * used to find them again when they are due. Messages without a Message-ID are left alone.
+     */
+    suspend fun snooze(account: Account, folderName: String, uids: List<Long>): Map<Long, String> = imap(account) { s ->
+        val target = s.getFolder(SNOOZED_FOLDER) as IMAPFolder
+        if (!target.exists()) target.create(Folder.HOLDS_MESSAGES)
+        val f = selected(s, folderName)
+        val msgs = f.getMessagesByUID(uids.toLongArray()).filterNotNull().toTypedArray()
+        f.fetch(msgs, FetchProfile().apply { add("Message-ID") })
+        val ids = msgs.mapNotNull { m -> m.getHeader("Message-ID")?.firstOrNull()?.let { f.getUID(m) to it } }.toMap()
+        val movable = msgs.filter { f.getUID(it) in ids }.toTypedArray()
+        if (movable.isNotEmpty()) move(s, f, movable, target)
+        ids
+    }
+
+    /** Moves the messages with these Message-IDs from Snoozed back to the inbox, unread. */
+    suspend fun unsnooze(account: Account, messageIds: List<String>) = imap(account) { s ->
+        val snoozed = s.getFolder(SNOOZED_FOLDER) as IMAPFolder
+        if (!snoozed.exists()) return@imap
+        val f = selected(s, SNOOZED_FOLDER)
+        val found = messageIds.flatMap { f.search(MessageIDTerm(it)).toList() }.distinct().toTypedArray()
+        if (found.isEmpty()) return@imap
+        f.setFlags(found, Flags(Flags.Flag.SEEN), false)
+        move(s, f, found, s.getFolder("INBOX"))
+    }
+
     private fun move(s: IMAPStore, from: IMAPFolder, msgs: Array<Message>, to: Folder) {
         if (s.hasCapability("MOVE")) {
             from.moveMessages(msgs, to)
@@ -547,6 +600,12 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     companion object {
         const val PAGE_SIZE = 50
+
+        /** Gmail inbox tabs, in Gmail's order. */
+        val GMAIL_CATEGORIES = listOf("primary", "promotions", "social", "updates", "forums")
+
+        /** Where snoozed mail waits (a label in Gmail); Gmail reserves the plain name "Snoozed". */
+        const val SNOOZED_FOLDER = "Snoozed by Mailroom"
         private const val TRUST_MS = 60 * 1000L
         private const val MAX_IDLE_MS = 8 * 60 * 1000L
         private const val MAX_INLINE_IMAGE = 2 * 1024 * 1024

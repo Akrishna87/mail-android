@@ -42,10 +42,14 @@ object MailSync {
     private const val GROUP = "new_mail"
     private const val SUMMARY_ID = 1 // 2 is the push service's notification.
     private const val FIRST_MESSAGE_ID = 100
+    private const val RETURNED_ID = 50 // Up to MAX_NOTIFICATIONS ids for mail back from snooze.
     private const val MAX_NOTIFICATIONS = 10
     private const val WORK_NAME = "new-mail-check"
     private const val PREFETCH_NEW = 10
     private const val PREFETCH_MAX_BYTES = 512 * 1024
+
+    /** Cache key of the inbox list, or of one Gmail inbox tab. */
+    fun inboxKey(category: String?): String = if (category == null) "INBOX" else "INBOX#$category"
 
     /** Starts or stops the background work that the chosen [SyncMode] needs. */
     fun apply(context: Context) {
@@ -70,6 +74,8 @@ object MailSync {
      */
     suspend fun syncInbox(context: Context, store: AccountStore, mail: MailService, account: Account) {
         val cache = MailCache(context)
+        // Snoozed mail that is due comes back first, so it is in the list below.
+        runCatching { Snoozes.returnDue(context, store, mail, account) }
         val page = mail.messages(account, "INBOX", 1)
         val saved = withContext(Dispatchers.IO) { cache.loadList("INBOX").associateBy { it.uid } }
         var list = page.messages.map { it.copy(preview = saved[it.uid]?.preview) }
@@ -89,10 +95,23 @@ object MailSync {
                 .also { cache.saveList("INBOX", it) }
         }
 
+        // Gmail: also save the Primary tab, and like Gmail only notify about Primary mail.
+        var primary: Set<Long>? = null
+        if (account.provider == Provider.GMAIL) {
+            val uids = mail.gmailQueryUids(account, "INBOX", "in:inbox category:primary").take(MailService.PAGE_SIZE)
+            primary = uids.toSet()
+            val previews = list.associate { it.uid to it.preview }
+            val rows = mail.summaries(account, "INBOX", uids).map { it.copy(preview = previews[it.uid]) }
+            withContext(Dispatchers.IO) {
+                rows.map { m -> if (m.preview != null) m else cache.load("INBOX", m.uid)?.let { m.copy(preview = it.preview) } ?: m }
+                    .also { cache.saveList(inboxKey("primary"), it) }
+            }
+        }
+
         val last = store.lastUidNext
         val next = maxOf(last, (list.maxOfOrNull { it.uid } ?: 0L) + 1)
         if (last > 0) {
-            val fresh = list.filter { it.uid >= last && !it.seen }
+            val fresh = list.filter { it.uid >= last && !it.seen && (primary == null || it.uid in primary) }
             if (fresh.isNotEmpty()) notifyNewMail(context, fresh)
         }
         store.lastUidNext = next
@@ -142,6 +161,31 @@ object MailSync {
             .setAutoCancel(true)
             .build()
         manager.notify(SUMMARY_ID, summary)
+    }
+
+    /** Snoozed mail is back in the inbox. */
+    fun notifyReturned(context: Context, returned: List<Snooze>) {
+        if (Build.VERSION.SDK_INT >= 33 &&
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) !=
+            PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
+        context.getSystemService(NotificationManager::class.java).createNotificationChannel(
+            NotificationChannel(CHANNEL_NEW_MAIL, "New mail", NotificationManager.IMPORTANCE_DEFAULT),
+        )
+        val manager = NotificationManagerCompat.from(context)
+        returned.take(MAX_NOTIFICATIONS).forEachIndexed { i, s ->
+            val notification = NotificationCompat.Builder(context, CHANNEL_NEW_MAIL)
+                .setSmallIcon(android.R.drawable.ic_dialog_email)
+                .setContentTitle(s.from)
+                .setContentText("Back from snooze: ${s.subject}")
+                .setContentIntent(openIntent(context, RETURNED_ID + i, null))
+                .setGroup(GROUP)
+                .setAutoCancel(true)
+                .build()
+            manager.notify(RETURNED_ID + i, notification)
+        }
     }
 
     /** Removes an email's notification, e.g. once it has been read in the app. */

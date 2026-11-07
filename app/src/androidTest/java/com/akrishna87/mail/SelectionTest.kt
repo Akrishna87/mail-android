@@ -54,7 +54,37 @@ class SelectionTest {
         compose.runOnIdle { assertEquals(setOf(1L), vm.selection) }
         compose.onNodeWithContentDescription("Delete").assertIsDisplayed()
         compose.onNodeWithContentDescription("Mark read").assertIsDisplayed()
-        compose.onNodeWithContentDescription("Star").assertIsDisplayed()
+        compose.onNodeWithContentDescription("Snooze").assertIsDisplayed()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Star").assertIsDisplayed()
+        compose.onNodeWithText("Move to").assertIsDisplayed()
+    }
+
+    @Test
+    fun snoozeOffersGmailTimes() {
+        compose.onNodeWithText("Subject 1").performTouchInput { longClick() }
+        compose.onNodeWithContentDescription("Snooze").performClick()
+
+        compose.onNodeWithText("Snooze until\u2026").assertIsDisplayed()
+        compose.onNodeWithText("Tomorrow").assertIsDisplayed()
+        compose.onNodeWithText("Next week").assertIsDisplayed()
+    }
+
+    @Test
+    fun moveToListsOtherFolders() {
+        vm.showFoldersForTest(
+            listOf(
+                MailFolder("INBOX", "INBOX", "inbox", 0),
+                MailFolder("Work", "Work", null, 0),
+                MailFolder("[Gmail]/Trash", "Trash", "trash", 0),
+            ),
+        )
+        compose.onNodeWithText("Subject 1").performTouchInput { longClick() }
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Move to").performClick()
+
+        compose.onNodeWithText("Work").assertIsDisplayed()
+        compose.onNodeWithText("Trash").assertIsDisplayed()
     }
 
     @Test
@@ -76,7 +106,8 @@ class SelectionTest {
     @Test
     fun selectAllThenCancel() {
         compose.onNodeWithText("Subject 1").performTouchInput { longClick() }
-        compose.onNodeWithText("All").performClick()
+        compose.onNodeWithContentDescription("More options").performClick()
+        compose.onNodeWithText("Select all").performClick()
         compose.runOnIdle { assertEquals(setOf(1L, 2L, 3L), vm.selection) }
 
         compose.onNodeWithContentDescription("Cancel selection").performClick()

@@ -58,6 +58,7 @@ import androidx.compose.material.icons.filled.Edit
 import androidx.compose.material.icons.filled.KeyboardArrowDown
 import androidx.compose.material.icons.filled.KeyboardArrowUp
 import androidx.compose.material.icons.filled.Menu
+import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.Search
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material.icons.filled.Star
@@ -65,6 +66,8 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.DrawerValue
+import androidx.compose.material3.DropdownMenu
+import androidx.compose.material3.DropdownMenuItem
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
@@ -290,7 +293,11 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 vm,
                 onSelect = { f ->
                     scope.launch { drawer.close() }
-                    vm.selectFolder(f.fullName)
+                    vm.selectFolder(f.fullName, cat = null)
+                },
+                onCategory = { cat ->
+                    scope.launch { drawer.close() }
+                    vm.selectCategory(cat)
                 },
                 onSettings = {
                     scope.launch { drawer.close() }
@@ -333,7 +340,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     item {
                         Text(
-                            current?.let { folderLabel(it) } ?: "Inbox",
+                            vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "Inbox",
                             Modifier.padding(start = 16.dp, top = 8.dp, bottom = 4.dp),
                             style = MaterialTheme.typography.labelLarge,
                             color = MaterialTheme.colorScheme.onSurfaceVariant,
@@ -352,7 +359,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                     if (vm.messages.isEmpty() && !vm.loading) {
                         item {
                             Text(
-                                "Nothing in ${current?.let { folderLabel(it) } ?: "this folder"}",
+                                "Nothing in ${vm.category?.let { categoryLabel(it) } ?: current?.let { folderLabel(it) } ?: "this folder"}",
                                 Modifier.fillMaxWidth().padding(48.dp),
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
@@ -403,15 +410,14 @@ internal fun SelectionBar(vm: MailViewModel) {
     val chosen = vm.messages.filter { it.uid in vm.selection }
     val anyUnread = chosen.any { !it.seen }
     val allStarred = chosen.isNotEmpty() && chosen.all { it.flagged }
+    var menu by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf<MessageDialog?>(null) }
     TopAppBar(
         navigationIcon = {
             IconButton(onClick = vm::clearSelection) { Icon(Icons.Default.Close, contentDescription = "Cancel selection") }
         },
         title = { Text(vm.selection.size.toString()) },
         actions = {
-            if (vm.selection.size < vm.messages.size) {
-                TextButton(onClick = vm::selectAll) { Text("All") }
-            }
             if (vm.canArchive) {
                 IconButton(onClick = vm::archiveSelected) {
                     Icon(painterResource(R.drawable.ic_archive), contentDescription = "Archive")
@@ -425,15 +431,112 @@ internal fun SelectionBar(vm: MailViewModel) {
                     Icon(painterResource(R.drawable.ic_mark_unread), contentDescription = "Mark unread")
                 }
             }
-            IconButton(onClick = { vm.starSelected(!allStarred) }) {
-                if (allStarred) {
-                    Icon(painterResource(R.drawable.ic_star_border), contentDescription = "Remove star")
-                } else {
-                    Icon(Icons.Default.Star, contentDescription = "Star", tint = Color(0xFFF4B400))
+            IconButton(onClick = { dialog = MessageDialog.Snooze }) {
+                Icon(painterResource(R.drawable.ic_snooze), contentDescription = "Snooze")
+            }
+            Box {
+                IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
+                DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                    if (vm.selection.size < vm.messages.size) {
+                        DropdownMenuItem(text = { Text("Select all") }, onClick = { menu = false; vm.selectAll() })
+                    }
+                    DropdownMenuItem(
+                        text = { Text(if (allStarred) "Remove star" else "Star") },
+                        onClick = { menu = false; vm.starSelected(!allStarred) },
+                    )
+                    DropdownMenuItem(text = { Text("Move to") }, onClick = { menu = false; dialog = MessageDialog.MoveTo })
+                    if (vm.isGmail) {
+                        DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
+                    }
                 }
             }
         },
         colors = TopAppBarDefaults.topAppBarColors(containerColor = MaterialTheme.colorScheme.surfaceContainerHigh),
+    )
+    MessageDialogs(
+        vm,
+        dialog,
+        onDismiss = { dialog = null },
+        onSnooze = vm::snoozeSelected,
+        onMove = vm::moveSelected,
+        onLabel = vm::labelSelected,
+    )
+}
+
+/** The pickers behind Snooze, Move to and Label as. */
+internal enum class MessageDialog { Snooze, MoveTo, LabelAs }
+
+@Composable
+private fun MessageDialogs(
+    vm: MailViewModel,
+    dialog: MessageDialog?,
+    onDismiss: () -> Unit,
+    onSnooze: (SnoozeTimes.Option) -> Unit,
+    onMove: (MailFolder) -> Unit,
+    onLabel: (MailFolder) -> Unit,
+) {
+    when (dialog) {
+        MessageDialog.Snooze -> SnoozeDialog(onDismiss) { onDismiss(); onSnooze(it) }
+        MessageDialog.MoveTo -> FolderPicker("Move to", vm.moveTargets, onDismiss) { onDismiss(); onMove(it) }
+        MessageDialog.LabelAs -> FolderPicker("Label as", vm.labelTargets, onDismiss) { onDismiss(); onLabel(it) }
+        null -> Unit
+    }
+}
+
+@Composable
+private fun SnoozeDialog(onDismiss: () -> Unit, onPick: (SnoozeTimes.Option) -> Unit) {
+    val context = LocalContext.current
+    val options = remember { SnoozeTimes.options() }
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text("Snooze until\u2026") },
+        text = {
+            Column {
+                options.forEach { option ->
+                    Row(
+                        Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onPick(option) }.padding(vertical = 12.dp, horizontal = 8.dp),
+                    ) {
+                        Text(option.label, Modifier.weight(1f), style = MaterialTheme.typography.bodyLarge)
+                        Text(
+                            DateUtils.formatDateTime(
+                                context, option.at,
+                                DateUtils.FORMAT_SHOW_WEEKDAY or DateUtils.FORMAT_ABBREV_WEEKDAY or DateUtils.FORMAT_SHOW_TIME,
+                            ),
+                            style = MaterialTheme.typography.bodyMedium,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
+    )
+}
+
+@Composable
+private fun FolderPicker(title: String, choices: List<MailFolder>, onDismiss: () -> Unit, onPick: (MailFolder) -> Unit) {
+    AlertDialog(
+        onDismissRequest = onDismiss,
+        title = { Text(title) },
+        text = {
+            if (choices.isEmpty()) {
+                Text("No labels yet. Create labels in Gmail and they appear here.")
+            } else {
+                LazyColumn {
+                    items(choices, key = { it.fullName }) { f ->
+                        Row(
+                            Modifier.fillMaxWidth().clip(RoundedCornerShape(8.dp)).clickable { onPick(f) }.padding(vertical = 12.dp, horizontal = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            Icon(folderIcon(f), contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(Modifier.width(16.dp))
+                            Text(folderLabel(f), style = MaterialTheme.typography.bodyLarge)
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = { TextButton(onClick = onDismiss) { Text("Cancel") } },
     )
 }
 
@@ -471,7 +574,12 @@ private fun AccountDialog(vm: MailViewModel, onDismiss: () -> Unit) {
 }
 
 @Composable
-private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit, onSettings: () -> Unit) {
+private fun FolderDrawer(
+    vm: MailViewModel,
+    onSelect: (MailFolder) -> Unit,
+    onCategory: (String) -> Unit,
+    onSettings: () -> Unit,
+) {
     ModalDrawerSheet {
         Column(Modifier.verticalScroll(rememberScrollState())) {
             Text(
@@ -480,15 +588,40 @@ private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit, onSe
                 style = MaterialTheme.typography.titleLarge,
                 color = Color(0xFFD93025),
             )
+            var labelsHeading = false
             vm.folders.forEach { f ->
-                NavigationDrawerItem(
-                    icon = { Icon(folderIcon(f), contentDescription = null) },
-                    label = { Text(folderLabel(f)) },
-                    badge = { if (f.unread > 0) Text(f.unread.toString()) },
-                    selected = f.fullName == vm.folder && vm.searchQuery == null,
-                    onClick = { onSelect(f) },
-                    modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
-                )
+                if (vm.isGmail && f.role == "inbox") {
+                    // Gmail's inbox tabs take the place of a single Inbox, like in the Gmail app.
+                    MailService.GMAIL_CATEGORIES.forEach { cat ->
+                        val unread = vm.categoryUnread[cat] ?: 0
+                        NavigationDrawerItem(
+                            icon = { Icon(categoryIcon(cat), contentDescription = null) },
+                            label = { Text(categoryLabel(cat)) },
+                            badge = { if (unread > 0) Text(if (cat == "primary") "$unread" else "$unread new") },
+                            selected = vm.folder == "INBOX" && vm.category == cat && vm.searchQuery == null,
+                            onClick = { onCategory(cat) },
+                            modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                        )
+                    }
+                } else {
+                    if (f.role == null && !labelsHeading) {
+                        labelsHeading = true
+                        Text(
+                            "Labels",
+                            Modifier.padding(start = 28.dp, top = 16.dp, bottom = 8.dp),
+                            style = MaterialTheme.typography.labelLarge,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                    NavigationDrawerItem(
+                        icon = { Icon(folderIcon(f), contentDescription = null) },
+                        label = { Text(folderLabel(f)) },
+                        badge = { if (f.unread > 0) Text(f.unread.toString()) },
+                        selected = f.fullName == vm.folder && vm.category == null && vm.searchQuery == null,
+                        onClick = { onSelect(f) },
+                        modifier = Modifier.padding(NavigationDrawerItemDefaults.ItemPadding),
+                    )
+                }
             }
             HorizontalDivider(Modifier.padding(vertical = 8.dp, horizontal = 28.dp))
             NavigationDrawerItem(
@@ -504,7 +637,20 @@ private fun FolderDrawer(vm: MailViewModel, onSelect: (MailFolder) -> Unit, onSe
 }
 
 @Composable
-private fun folderIcon(f: MailFolder): Painter = when (f.role) {
+private fun categoryIcon(cat: String): Painter = when (cat) {
+    "promotions" -> painterResource(R.drawable.ic_promotions)
+    "social" -> painterResource(R.drawable.ic_social)
+    "updates" -> painterResource(R.drawable.ic_updates)
+    "forums" -> painterResource(R.drawable.ic_forums)
+    else -> painterResource(R.drawable.ic_inbox)
+}
+
+private fun categoryLabel(cat: String): String = cat.replaceFirstChar { it.uppercase() }
+
+@Composable
+private fun folderIcon(f: MailFolder): Painter = if (f.fullName == MailService.SNOOZED_FOLDER) {
+    painterResource(R.drawable.ic_snooze)
+} else when (f.role) {
     "inbox" -> painterResource(R.drawable.ic_inbox)
     "starred" -> painterResource(R.drawable.ic_star_border)
     "sent" -> rememberVectorPainter(Icons.AutoMirrored.Filled.Send)
@@ -516,7 +662,7 @@ private fun folderIcon(f: MailFolder): Painter = when (f.role) {
     else -> painterResource(R.drawable.ic_label)
 }
 
-private fun folderLabel(f: MailFolder): String = when (f.role) {
+private fun folderLabel(f: MailFolder): String = if (f.fullName == MailService.SNOOZED_FOLDER) "Snoozed" else when (f.role) {
     "inbox" -> "Inbox"
     "sent" -> "Sent"
     "drafts" -> "Drafts"
@@ -916,7 +1062,17 @@ private fun SettingsScreen(vm: MailViewModel) {
 @Composable
 private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostState) {
     var scrolled by remember(uid) { mutableStateOf(false) }
+    var menu by remember { mutableStateOf(false) }
+    var dialog by remember { mutableStateOf<MessageDialog?>(null) }
     val m = vm.message
+    MessageDialogs(
+        vm,
+        dialog,
+        onDismiss = { dialog = null },
+        onSnooze = { vm.snooze(uid, it) },
+        onMove = { vm.moveTo(uid, it) },
+        onLabel = { vm.labelAs(uid, it) },
+    )
 
     Scaffold(
         topBar = {
@@ -932,6 +1088,18 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
                     IconButton(onClick = { vm.delete(uid) }) { Icon(Icons.Default.Delete, contentDescription = "Delete") }
                     IconButton(onClick = { vm.markUnread(uid) }) {
                         Icon(painterResource(R.drawable.ic_mark_unread), contentDescription = "Mark unread")
+                    }
+                    IconButton(onClick = { dialog = MessageDialog.Snooze }) {
+                        Icon(painterResource(R.drawable.ic_snooze), contentDescription = "Snooze")
+                    }
+                    Box {
+                        IconButton(onClick = { menu = true }) { Icon(Icons.Default.MoreVert, contentDescription = "More options") }
+                        DropdownMenu(expanded = menu, onDismissRequest = { menu = false }) {
+                            DropdownMenuItem(text = { Text("Move to") }, onClick = { menu = false; dialog = MessageDialog.MoveTo })
+                            if (vm.isGmail) {
+                                DropdownMenuItem(text = { Text("Label as") }, onClick = { menu = false; dialog = MessageDialog.LabelAs })
+                            }
+                        }
                     }
                 },
             )

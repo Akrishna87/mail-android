@@ -77,6 +77,8 @@ dependencies {
     implementation("com.sun.mail:android-mail:1.6.8")
     implementation("com.sun.mail:android-activation:1.6.8")
 
+    testImplementation("junit:junit:4.13.2")
+
     // UI tests that run on an Android emulator in CI.
     androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     androidTestImplementation("androidx.compose.ui:ui-test-junit4")

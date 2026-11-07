@@ -57,6 +57,16 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         private set
     var folder by mutableStateOf("INBOX")
         private set
+
+    /** Gmail inbox tab shown (primary, promotions, ...), or null for the whole folder. */
+    var category by mutableStateOf(if (account?.provider == Provider.GMAIL) "primary" else null)
+        private set
+
+    /** Unread count per Gmail inbox tab. */
+    var categoryUnread by mutableStateOf(mapOf<String, Int>())
+        private set
+
+    val isGmail: Boolean get() = account?.provider == Provider.GMAIL
     var messages by mutableStateOf(listOf<MessageSummary>())
         private set
     var hasMore by mutableStateOf(false)
@@ -102,6 +112,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     val activeFolder: String get() = searchFolder ?: folder
 
     private var page = 1
+    private var categoryUids: List<Long> = emptyList()
     private var running = 0
     private var lastRefresh = 0L
     private var prefetchJob: Job? = null
@@ -113,7 +124,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             lastRefresh = System.currentTimeMillis()
             viewModelScope.launch {
                 // Show what was saved last time immediately, then update from the server.
-                val (savedFolders, savedList) = withContext(Dispatchers.IO) { cache.loadFolders() to cache.loadList(folder) }
+                val (savedFolders, savedList) = withContext(Dispatchers.IO) { cache.loadFolders() to cache.loadList(listKey(folder)) }
                 if (messages.isEmpty()) messages = savedList
                 if (folders.isEmpty()) folders = savedFolders
                 refresh()
@@ -190,7 +201,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             refresh() // Don't throw away a draft being written; just bring in the new mail.
             return
         }
-        if (folder != "INBOX" || searchQuery != null) selectFolder("INBOX")
+        if (folder != "INBOX" || searchQuery != null || category != defaultCategory("INBOX")) selectFolder("INBOX")
         screen = Screen.Mailbox
         if (System.currentTimeMillis() - lastRefresh > NOTIFICATION_REFRESH_MS) refresh()
         if (uid != null) open(uid)
@@ -236,6 +247,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         syncMode = store.syncMode
         MailSync.apply(getApplication())
         folder = "INBOX"
+        category = defaultCategory("INBOX")
         screen = Screen.Mailbox
         lastRefresh = System.currentTimeMillis()
         loadMessages(reset = true)
@@ -253,6 +265,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         messages = emptyList()
         message = null
         folder = "INBOX"
+        category = null
+        categoryUnread = emptyMap()
         screen = Screen.Setup
     }
 
@@ -334,18 +348,28 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         searchFolder = null
         searchUids = emptyList()
         screen = Screen.Mailbox
-        selectFolder(folder)
+        selectFolder(folder, category)
     }
 
-    fun selectFolder(fullName: String) {
+    /** Gmail opens the inbox on the Primary tab, like the Gmail app. */
+    private fun defaultCategory(f: String): String? = if (f == "INBOX" && isGmail) "primary" else null
+
+    /** Cache key of the list shown for [f]: a Gmail inbox tab has its own. */
+    private fun listKey(f: String): String = if (f == "INBOX") MailSync.inboxKey(category) else f
+
+    fun selectCategory(cat: String) = selectFolder("INBOX", cat)
+
+    fun selectFolder(fullName: String, cat: String? = defaultCategory(fullName)) {
         selection = emptySet()
         searchQuery = null
         searchFolder = null
         folder = fullName
+        category = cat
+        categoryUids = emptyList()
         prefetchJob?.cancel()
         viewModelScope.launch {
-            val saved = withContext(Dispatchers.IO) { cache.loadList(fullName) }
-            if (folder == fullName) messages = saved
+            val saved = withContext(Dispatchers.IO) { cache.loadList(listKey(fullName)) }
+            if (folder == fullName && category == cat) messages = saved
         }
         launchTask {
             loadMessages(reset = true)
@@ -363,14 +387,23 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val a = account ?: return
         folders = mail.folders(a)
         withContext(Dispatchers.IO) { cache.saveFolders(folders) }
+        if (isGmail) categoryUnread = runCatching { mail.categoryUnread(a) }.getOrDefault(categoryUnread)
     }
 
     private suspend fun loadMessages(reset: Boolean) {
         val a = account ?: return
         val f = folder
+        val cat = category
         if (reset) page = 1
-        val result = mail.messages(a, f, page)
-        if (f != folder) return
+        val result = if (f == "INBOX" && cat != null) {
+            // A Gmail tab is a Gmail search of the inbox; its UIDs are fetched once and shown in pages.
+            if (reset || categoryUids.isEmpty()) categoryUids = mail.gmailQueryUids(a, f, "in:inbox category:$cat")
+            val pageUids = categoryUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
+            Page(mail.summaries(a, f, pageUids), categoryUids.size > page * MailService.PAGE_SIZE)
+        } else {
+            mail.messages(a, f, page)
+        }
+        if (f != folder || cat != category) return
         // Keep previews of messages that were already downloaded.
         val previews = messages.associate { it.uid to it.preview }
         val fresh = result.messages.map { it.copy(preview = previews[it.uid]) }
@@ -385,7 +418,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     private suspend fun persistList(f: String) {
         if (searchQuery != null || f != folder) return
         val snapshot = messages
-        withContext(Dispatchers.IO) { cache.saveList(f, snapshot) }
+        val key = listKey(f)
+        withContext(Dispatchers.IO) { cache.saveList(key, snapshot) }
     }
 
     /** Downloads the newest messages in the background, so opening them needs no network. */
@@ -447,6 +481,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         if (known != null) {
             messages = messages.map { if (it.uid == uid) it.copy(seen = true) else it }
             folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread - 1)) else it }
+            adjustCategoryUnread(f, -1)
         }
         viewModelScope.launch {
             runCatching { mail.setFlag(a, f, listOf(uid), "\\Seen", true) }
@@ -466,11 +501,18 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         messages = messages.map { if (it.uid in uids) it.copy(seen = read) else it }
         val delta = if (read) -changed else changed
         folders = folders.map { if (it.fullName == f) it.copy(unread = maxOf(0, it.unread + delta)) else it }
+        adjustCategoryUnread(f, delta)
         if (read) uids.forEach { MailSync.cancelNotification(getApplication(), it) }
         launchTask {
             mail.setFlag(a, f, uids, "\\Seen", read)
             persistList(f)
         }
+    }
+
+    private fun adjustCategoryUnread(f: String, delta: Int) {
+        val cat = category ?: return
+        if (f != "INBOX" || searchQuery != null) return
+        categoryUnread = categoryUnread + (cat to maxOf(0, (categoryUnread[cat] ?: 0) + delta))
     }
 
     fun toggleStar(uid: Long) = setStarred(listOf(uid), on = !isStarred(uid))
@@ -511,6 +553,11 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     internal fun showMessagesForTest(list: List<MessageSummary>) {
         messages = list
         screen = Screen.Mailbox
+    }
+
+    @VisibleForTesting
+    internal fun showFoldersForTest(list: List<MailFolder>) {
+        folders = list
     }
 
     fun archiveSelected() = archiveAll(selection.toList())
@@ -555,6 +602,62 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         stage(uids, "Archived") { mail.archive(a, f, uids) }
     }
 
+    /** Folders a message can be moved to (all but the one it is in). */
+    val moveTargets: List<MailFolder> get() = folders.filter { it.fullName != activeFolder && it.role != "drafts" }
+
+    /** Gmail labels a message can be given (user labels, not system folders). */
+    val labelTargets: List<MailFolder>
+        get() = folders.filter { it.role == null && it.fullName != MailService.SNOOZED_FOLDER && it.fullName != activeFolder }
+
+    fun snooze(uid: Long, option: SnoozeTimes.Option) = snoozeAll(listOf(uid), option)
+
+    fun snoozeSelected(option: SnoozeTimes.Option) = snoozeAll(selection.toList(), option)
+
+    fun moveTo(uid: Long, target: MailFolder) = moveAll(listOf(uid), target)
+
+    fun moveSelected(target: MailFolder) = moveAll(selection.toList(), target)
+
+    fun labelAs(uid: Long, label: MailFolder) = labelAll(listOf(uid), label)
+
+    fun labelSelected(label: MailFolder) {
+        labelAll(selection.toList(), label)
+        clearSelection()
+    }
+
+    /** Hides the messages until [option]'s time, then they return to the inbox unread (see [Snoozes]). */
+    private fun snoozeAll(uids: List<Long>, option: SnoozeTimes.Option) {
+        val a = account ?: return
+        val f = activeFolder
+        val rows = messages.filter { it.uid in uids }.associateBy { it.uid }
+        val time = DateUtils.formatDateTime(
+            getApplication(), option.at,
+            DateUtils.FORMAT_SHOW_WEEKDAY or DateUtils.FORMAT_ABBREV_WEEKDAY or DateUtils.FORMAT_SHOW_TIME,
+        )
+        stage(uids, "Snoozed until $time") {
+            val ids = mail.snooze(a, f, uids)
+            store.snoozes = store.snoozes + ids.map { (uid, id) ->
+                Snooze(id, option.at, rows[uid]?.from.orEmpty(), rows[uid]?.subject.orEmpty())
+            }
+            Snoozes.schedule(getApplication())
+            if (ids.size < uids.size) notice = "Some messages couldn't be snoozed"
+        }
+    }
+
+    private fun moveAll(uids: List<Long>, target: MailFolder) {
+        val a = account ?: return
+        val f = activeFolder
+        stage(uids, "Moved to ${target.name}") { mail.moveTo(a, f, uids, target.fullName) }
+    }
+
+    private fun labelAll(uids: List<Long>, label: MailFolder) {
+        val a = account ?: return
+        val f = activeFolder
+        launchTask {
+            mail.labelAs(a, f, uids, label.fullName)
+            notice = "Labelled ${label.name}"
+        }
+    }
+
     private fun deleteAll(uids: List<Long>) {
         val a = account ?: return
         val f = activeFolder
@@ -581,7 +684,9 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             },
             restore = { if (activeFolder == f) messages = before },
         )
-        undoOffer = UndoOffer(if (uids.size == 1) text else "${uids.size} ${text.lowercase()}", System.nanoTime())
+        // "Archived" for one; "3 archived", "3 snoozed until Sat 8:00 AM" for several.
+        val shown = if (uids.size == 1) text else "${uids.size} ${text.replaceFirstChar { it.lowercase() }}"
+        undoOffer = UndoOffer(shown, System.nanoTime())
     }
 
     fun undoPendingChange() {
