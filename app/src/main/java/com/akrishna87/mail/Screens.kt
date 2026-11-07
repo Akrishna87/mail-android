@@ -1136,6 +1136,9 @@ private fun SettingsScreen(vm: MailViewModel) {
                 }
             }
             Text(status, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = soft)
+            vm.lastOpenTiming?.let {
+                Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = soft)
+            }
 
             if (vm.syncMode != SyncMode.MANUAL && !unrestricted) {
                 HorizontalDivider()
@@ -1285,7 +1288,22 @@ private fun ReaderScreen(vm: MailViewModel, uid: Long, snackbar: SnackbarHostSta
     ) { pad ->
         Column(Modifier.padding(pad).fillMaxSize()) {
             if (m == null) {
+                // Show what the list already knows straight away; the body follows.
                 if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
+                vm.opening?.let { row ->
+                    Text(
+                        row.subject,
+                        Modifier.padding(horizontal = 16.dp, vertical = 10.dp),
+                        style = MaterialTheme.typography.headlineSmall,
+                        maxLines = 4,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Row(Modifier.padding(horizontal = 16.dp), verticalAlignment = Alignment.CenterVertically) {
+                        Avatar(row.from)
+                        Spacer(Modifier.width(12.dp))
+                        Text(row.from, style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+                    }
+                }
                 return@Column
             }
             Row(Modifier.padding(start = 16.dp, end = 4.dp, top = 4.dp), verticalAlignment = Alignment.Top) {

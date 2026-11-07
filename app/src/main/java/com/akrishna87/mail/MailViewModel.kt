@@ -47,6 +47,10 @@ private class PendingChange(val run: suspend () -> Unit, val restore: () -> Unit
 class MailViewModel(app: Application) : AndroidViewModel(app) {
     private val store = AccountStore(app)
     private val mail = MailService(app, store)
+
+    // Background work (downloading ahead, unread counts, folders) has its own connection, so opening
+    // an email never waits behind it: one shared connection made a tap wait up to 15 seconds.
+    private val background = MailService(app, store)
     private val cache = MailCache(app)
     private val authService = AuthorizationService(app)
 
@@ -163,7 +167,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     override fun onCleared() {
         authService.dispose()
-        Thread { mail.close() }.start()
+        Thread {
+            mail.close()
+            background.close()
+        }.start()
     }
 
     /** Runs [block] in the background with a progress bar; on failure shows the error and runs [onError]. */
@@ -427,9 +434,9 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     private suspend fun loadFolders() {
         val a = account ?: return
-        folders = mail.folders(a)
+        folders = background.folders(a)
         withContext(Dispatchers.IO) { cache.saveFolders(folders) }
-        if (isGmail) categoryUnread = runCatching { mail.categoryUnread(a) }.getOrDefault(categoryUnread)
+        if (isGmail) categoryUnread = runCatching { background.categoryUnread(a) }.getOrDefault(categoryUnread)
     }
 
     private suspend fun loadMessages(reset: Boolean) {
@@ -501,7 +508,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
                 }
                 applyPreviews(f, cachedPreviews)
                 for (batch in missing.chunked(PREFETCH_BATCH)) {
-                    val details = mail.prefetch(a, f, batch.map { it.uid })
+                    val details = background.prefetch(a, f, batch.map { it.uid })
                     withContext(Dispatchers.IO) { details.values.forEach { cache.save(f, it) } }
                     applyPreviews(f, details.mapValues { it.value.preview })
                 }
@@ -521,15 +528,29 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     // --- Reading ------------------------------------------------------------------------------
 
+    /** The list row of the email being opened, shown at once while its body loads. */
+    var opening by mutableStateOf<MessageSummary?>(null)
+        private set
+
+    /** How long the last email took to open, shown in Settings. */
+    var lastOpenTiming by mutableStateOf<String?>(null)
+        private set
+
     fun open(uid: Long) {
         val a = account ?: return
         val f = activeFolder
+        val row = messages.firstOrNull { it.uid == uid }
         message = null
+        opening = row
         screen = Screen.Reader(uid)
+        val started = System.currentTimeMillis()
         launchTask {
-            val detail = withContext(Dispatchers.IO) { cache.load(f, uid) }
-                ?: mail.message(a, f, uid).also { withContext(Dispatchers.IO) { cache.save(f, it) } }
+            val cached = withContext(Dispatchers.IO) { cache.load(f, uid) }
+            val detail = cached
+                ?: mail.message(a, f, uid, row?.size ?: 0).also { withContext(Dispatchers.IO) { cache.save(f, it) } }
             if (screen == Screen.Reader(uid)) message = detail
+            val seconds = (System.currentTimeMillis() - started) / 1000.0
+            lastOpenTiming = "Last email opened in %.1f s (%s)".format(seconds, if (cached != null) "saved on phone" else "downloaded")
             markRead(a, f, uid)
         }
     }

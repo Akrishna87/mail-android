@@ -384,8 +384,22 @@ class MailService(private val context: Context, private val store: AccountStore)
     }
 
     /** Downloads one message without marking it read. */
-    suspend fun message(account: Account, folderName: String, uid: Long): MessageDetail =
-        prefetch(account, folderName, listOf(uid))[uid] ?: throw MessagingException("This message no longer exists")
+    suspend fun message(account: Account, folderName: String, uid: Long, size: Int = 0): MessageDetail =
+        if (size > LARGE_MESSAGE) {
+            largeMessage(account, folderName, uid)
+        } else {
+            prefetch(account, folderName, listOf(uid))[uid] ?: throw MessagingException("This message no longer exists")
+        }
+
+    /**
+     * A big message (usually big attachments) part by part: the structure, then only the text and
+     * small inline images. Attachments download when opened, instead of before the email shows.
+     */
+    private suspend fun largeMessage(account: Account, folderName: String, uid: Long): MessageDetail = imap(account) { s ->
+        val m = byUid(selected(s, folderName), listOf(uid)).firstOrNull() as? MimeMessage
+            ?: throw MessagingException("This message no longer exists")
+        parse(uid, m)
+    }
 
     /** Downloads several messages in one request, without marking them read. */
     suspend fun prefetch(account: Account, folderName: String, uids: List<Long>): Map<Long, MessageDetail> =
@@ -693,6 +707,7 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     companion object {
         const val PAGE_SIZE = 50
+        private const val LARGE_MESSAGE = 1024 * 1024
         private val BAD_REPLY = Regex("""^([A-Z]+\d+) BAD""")
 
         /** Gmail inbox tabs, in Gmail's order. */
