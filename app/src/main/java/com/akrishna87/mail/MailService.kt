@@ -16,6 +16,8 @@ import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import java.io.File
+import java.io.OutputStream
+import java.io.PrintStream
 import java.io.Serializable
 import java.util.Date
 import java.util.Properties
@@ -123,7 +125,60 @@ class MailService(private val context: Context, private val store: AccountStore)
             p["mail.imaps.auth.mechanisms"] = "XOAUTH2"
             p["mail.smtp.auth.mechanisms"] = "XOAUTH2"
         }
-        return Session.getInstance(p)
+        return Session.getInstance(p).apply {
+            debugOut = PrintStream(trace, true)
+            debug = true
+        }
+    }
+
+    private val trace = CommandTrace()
+
+    /**
+     * For a server "BAD" reply (e.g. "D4 BAD Could not parse command"), the message plus the
+     * command it refused, so the problem can be fixed from a screenshot. Null for other errors.
+     */
+    fun describeRejection(e: Throwable): String? {
+        val message = e.message ?: return null
+        val tag = BAD_REPLY.find(message)?.groupValues?.get(1) ?: return null
+        val command = trace.command(tag) ?: return null
+        return "$message. Rejected command: ${command.removePrefix("$tag ").take(160)}"
+    }
+
+    /**
+     * Keeps the last IMAP commands sent (not replies or message contents) from the session's debug
+     * output. Sign-in commands are not traced by JavaMail ("trace suppressed").
+     */
+    private class CommandTrace : OutputStream() {
+        private val line = StringBuilder()
+        private val recent = ArrayDeque<String>()
+
+        override fun write(b: Int) = write(byteArrayOf(b.toByte()), 0, 1)
+
+        @Synchronized
+        override fun write(b: ByteArray, off: Int, len: Int) {
+            for (i in off until off + len) {
+                val c = (b[i].toInt() and 0xff).toChar()
+                if (c == '\n') endLine() else if (line.length < MAX_LINE) line.append(c)
+            }
+        }
+
+        private fun endLine() {
+            val text = line.toString().trimEnd('\r')
+            line.setLength(0)
+            if (SENT_COMMAND.matches(text)) {
+                recent.addLast(text)
+                if (recent.size > MAX_LINES) recent.removeFirst()
+            }
+        }
+
+        @Synchronized
+        fun command(tag: String): String? = recent.lastOrNull { it.startsWith("$tag ") }
+
+        private companion object {
+            const val MAX_LINE = 300
+            const val MAX_LINES = 40
+            val SENT_COMMAND = Regex("""^[A-Z]+\d+ (?!(OK|NO|BAD) ).*""")
+        }
     }
 
     // --- Connection ---------------------------------------------------------------------------
@@ -280,10 +335,11 @@ class MailService(private val context: Context, private val store: AccountStore)
     private fun gmailSearch(f: IMAPFolder, query: String): List<Long> {
         @Suppress("UNCHECKED_CAST")
         return f.doCommand { p ->
-            val args = Argument()
-                .writeAtom("CHARSET").writeAtom("UTF-8")
-                .writeAtom("X-GM-RAW").writeString(query, "UTF-8")
-            val r = p.command("UID SEARCH", args)
+            // As JavaMail's own Gmail support does: CHARSET only when the text isn't plain ASCII.
+            val ascii = query.all { it.code < 128 }
+            val args = Argument().writeAtom("X-GM-RAW")
+            if (ascii) args.writeString(query) else args.writeString(query, "UTF-8")
+            val r = p.command(if (ascii) "UID SEARCH" else "UID SEARCH CHARSET UTF-8", args)
             p.notifyResponseHandlers(r.copyOfRange(0, r.size - 1))
             p.handleResult(r.last())
             r.filterIsInstance<IMAPResponse>().filter { it.keyEquals("SEARCH") }.flatMap { resp ->
@@ -600,6 +656,7 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     companion object {
         const val PAGE_SIZE = 50
+        private val BAD_REPLY = Regex("""^([A-Z]+\d+) BAD""")
 
         /** Gmail inbox tabs, in Gmail's order. */
         val GMAIL_CATEGORIES = listOf("primary", "promotions", "social", "updates", "forums")

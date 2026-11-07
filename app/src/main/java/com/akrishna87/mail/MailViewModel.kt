@@ -23,6 +23,7 @@ import java.io.File
 import java.net.UnknownHostException
 import java.text.DateFormat
 import javax.mail.AuthenticationFailedException
+import javax.mail.MessagingException
 import kotlin.coroutines.cancellation.CancellationException
 
 sealed interface Screen {
@@ -168,7 +169,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             "Sign-in failed. Check your email address and password."
         is MailConnectException, is UnknownHostException ->
             "Can't reach the mail server. Check your internet connection."
-        else -> e.message ?: e.javaClass.simpleName
+        else -> mail.describeRejection(e) ?: e.message ?: e.javaClass.simpleName
     }
 
     // --- Navigation ---------------------------------------------------------------------------
@@ -396,14 +397,21 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val cat = category
         if (reset) page = 1
         val result = if (f == "INBOX" && cat != null) {
-            // A Gmail tab is a Gmail search of the inbox; its UIDs are fetched once and shown in pages.
-            if (reset || categoryUids.isEmpty()) categoryUids = mail.gmailQueryUids(a, f, "in:inbox category:$cat")
-            val pageUids = categoryUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
-            Page(mail.summaries(a, f, pageUids), categoryUids.size > page * MailService.PAGE_SIZE)
+            try {
+                // A Gmail tab is a Gmail search of the inbox; its UIDs are fetched once and shown in pages.
+                if (reset || categoryUids.isEmpty()) categoryUids = mail.gmailQueryUids(a, f, "in:inbox category:$cat")
+                val pageUids = categoryUids.drop((page - 1) * MailService.PAGE_SIZE).take(MailService.PAGE_SIZE)
+                Page(mail.summaries(a, f, pageUids), categoryUids.size > page * MailService.PAGE_SIZE)
+            } catch (e: MessagingException) {
+                // Rather than an empty screen, show the whole inbox and say why the tab didn't load.
+                notice = "Couldn't load ${cat.replaceFirstChar { it.uppercase() }}, showing the whole inbox. ${friendly(e)}"
+                category = null
+                mail.messages(a, f, page)
+            }
         } else {
             mail.messages(a, f, page)
         }
-        if (f != folder || cat != category) return
+        if (f != folder || (cat != category && category != null)) return
         // Keep previews of messages that were already downloaded.
         val previews = messages.associate { it.uid to it.preview }
         val fresh = result.messages.map { it.copy(preview = previews[it.uid]) }

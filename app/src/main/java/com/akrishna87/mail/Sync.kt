@@ -97,8 +97,13 @@ object MailSync {
 
         // Gmail: also save the Primary tab, and like Gmail only notify about Primary mail.
         var primary: Set<Long>? = null
-        if (account.provider == Provider.GMAIL) {
-            val uids = mail.gmailQueryUids(account, "INBOX", "in:inbox category:primary").take(MailService.PAGE_SIZE)
+        val primaryUids = if (account.provider == Provider.GMAIL) {
+            runCatching { mail.gmailQueryUids(account, "INBOX", "in:inbox category:primary") }.getOrNull()
+        } else {
+            null
+        }
+        if (primaryUids != null) {
+            val uids = primaryUids.take(MailService.PAGE_SIZE)
             primary = uids.toSet()
             val previews = list.associate { it.uid to it.preview }
             val rows = mail.summaries(account, "INBOX", uids).map { it.copy(preview = previews[it.uid]) }
