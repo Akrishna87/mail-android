@@ -20,6 +20,21 @@ class TextCleanupTest {
     }
 
     @Test
+    fun leftoverCssAndSeparatorsAreDropped() {
+        // Seen on a phone: Tim Ferriss's preview showed "a {text-decoration: none;} ***************".
+        assertEquals(
+            "Hi all, here is 5-Bullet Friday",
+            cleanPreview("a {text-decoration: none;} *************** Hi all, here is 5-Bullet Friday"),
+        )
+        assertEquals("Monthly update", cleanPreview("body { margin: 0; } ======== Monthly update -----"))
+    }
+
+    @Test
+    fun bracesWithoutCssAreKept() {
+        assertEquals("Hello {name}, welcome", cleanPreview("Hello {name}, welcome"))
+    }
+
+    @Test
     fun plainTextIsLeftAlone() {
         val text = "Lunch tomorrow? Use a < b and x > y freely"
         assertFalse(looksLikeHtml(text))

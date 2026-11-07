@@ -325,7 +325,11 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                             onMenu = { scope.launch { drawer.open() } },
                             onAccount = { showAccount = true },
                         )
-                        if (vm.isGmail) CategoryChips(vm)
+                        if (vm.isGmail) {
+                            CategoryChips(vm, onJumpToUnread = {
+                                vm.jumpToFirstUnread { i -> scope.launch { listState.animateScrollToItem(i) } }
+                            })
+                        }
                     }
                 }
             },
@@ -392,9 +396,12 @@ private fun MailboxHeader(title: String, vm: MailViewModel, onMenu: () -> Unit, 
     }
 }
 
-/** Gmail's inbox tabs as chips; the chosen one is filled with the theme gradient. */
+/**
+ * Gmail's inbox tabs as chips; the chosen one is filled with the theme gradient. Tapping the chosen
+ * chip again jumps to its first unread email, which may be far down the list.
+ */
 @Composable
-private fun CategoryChips(vm: MailViewModel) {
+private fun CategoryChips(vm: MailViewModel, onJumpToUnread: () -> Unit) {
     val accent = LocalAccent.current
     Row(
         Modifier.horizontalScroll(rememberScrollState()).padding(horizontal = 12.dp, vertical = 8.dp),
@@ -410,7 +417,7 @@ private fun CategoryChips(vm: MailViewModel) {
                     .background(
                         if (chosen) Brush.linearGradient(accent) else SolidColor(MaterialTheme.colorScheme.surfaceContainerHigh),
                     )
-                    .clickable { vm.selectCategory(cat) }
+                    .clickable { if (chosen) onJumpToUnread() else vm.selectCategory(cat) }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.labelLarge,
                 color = if (chosen) Color.White else categoryColor(cat)?.let { if (isDark()) it.lighten() else it }

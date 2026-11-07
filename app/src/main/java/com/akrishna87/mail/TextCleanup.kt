@@ -15,8 +15,13 @@ fun cleanPreview(text: String): String {
             .replace("&nbsp;", " ").replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
             .replace("&quot;", "\"").replace("&#39;", "'")
     }
+    // Newsletters' plain-text parts sometimes start with leftover CSS ("a {text-decoration: none;}")
+    // and lines of asterisks or dashes; neither belongs in a preview.
+    s = s.replace(CSS_RULE, " ").replace(SEPARATOR, " ")
     return s.replace(Regex("\\s+"), " ").trim().take(160)
 }
 
-private const val OBJECT_REPLACEMENT = "￼"
+private const val OBJECT_REPLACEMENT = "\uFFFC"
+private val CSS_RULE = Regex("""[\w\s.#:,>*\[\]="'-]{0,80}\{[^{}]*:[^{}]*\}""")
+private val SEPARATOR = Regex("""([*=_~#-])\1{3,}""")
 private val HTML_TAG = Regex("(?i)<(html|head|body|div|p|br|table|span|a)[\\s>/]")

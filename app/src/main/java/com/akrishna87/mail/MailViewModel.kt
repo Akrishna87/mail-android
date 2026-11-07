@@ -550,6 +550,21 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         }
     }
 
+    /**
+     * For the selected tab's chip: finds the first unread email, loading older pages (up to a limit)
+     * when it is further down, and passes its index to [onFound].
+     */
+    fun jumpToFirstUnread(onFound: (Int) -> Unit) = launchTask {
+        var pages = 0
+        while (messages.none { !it.seen } && hasMore && pages < MAX_JUMP_PAGES) {
+            page += 1
+            pages += 1
+            loadMessages(reset = false)
+        }
+        val index = messages.indexOfFirst { !it.seen }
+        if (index >= 0) onFound(index) else notice = "No unread emails here"
+    }
+
     private fun adjustCategoryUnread(f: String, delta: Int) {
         val cat = category ?: return
         if (f != "INBOX" || searchQuery != null) return
@@ -849,6 +864,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         const val NOTIFICATION_REFRESH_MS = 5 * 1000L
         const val LIVE_REFRESH_MS = 5 * 1000L
         const val MAX_RECENT_SEARCHES = 10
+        const val MAX_JUMP_PAGES = 10 // 500 emails
         const val MAX_KNOWN_SENDERS = 500 // Skips only the refresh the launch itself just started.
     }
 }
