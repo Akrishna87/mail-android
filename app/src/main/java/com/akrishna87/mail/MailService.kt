@@ -314,7 +314,10 @@ class MailService(private val context: Context, private val store: AccountStore)
     /** Unread count of each Gmail inbox category (Primary, Promotions, ...). */
     suspend fun categoryUnread(account: Account): Map<String, Int> = imap(account) { s ->
         val f = selected(s, "INBOX")
-        GMAIL_CATEGORIES.associateWith { gmailSearch(f, "in:inbox category:$it is:unread").size }
+        // Gmail's is:unread works on whole conversations, so it also counted read emails that share a
+        // conversation with an unread one. Count unread *emails* instead, as the list shows them.
+        val unseen = uidSearch(f, "UID SEARCH UNSEEN", null).toSet()
+        GMAIL_CATEGORIES.associateWith { cat -> gmailSearch(f, "in:inbox category:$cat").count { it in unseen } }
     }
 
     /** List rows for [uids] in [folderName], newest first. */
@@ -333,13 +336,18 @@ class MailService(private val context: Context, private val store: AccountStore)
 
     /** UID SEARCH X-GM-RAW "<query>": Gmail's own search syntax, run by Google. */
     private fun gmailSearch(f: IMAPFolder, query: String): List<Long> {
+        // As JavaMail's own Gmail support does: CHARSET only when the text isn't plain ASCII.
+        val ascii = query.all { it.code < 128 }
+        val args = Argument().writeAtom("X-GM-RAW")
+        if (ascii) args.writeString(query) else args.writeString(query, "UTF-8")
+        return uidSearch(f, if (ascii) "UID SEARCH" else "UID SEARCH CHARSET UTF-8", args)
+    }
+
+    /** Runs a UID SEARCH command and returns the matching UIDs. */
+    private fun uidSearch(f: IMAPFolder, command: String, args: Argument?): List<Long> {
         @Suppress("UNCHECKED_CAST")
         return f.doCommand { p ->
-            // As JavaMail's own Gmail support does: CHARSET only when the text isn't plain ASCII.
-            val ascii = query.all { it.code < 128 }
-            val args = Argument().writeAtom("X-GM-RAW")
-            if (ascii) args.writeString(query) else args.writeString(query, "UTF-8")
-            val r = p.command(if (ascii) "UID SEARCH" else "UID SEARCH CHARSET UTF-8", args)
+            val r = p.command(command, args)
             p.notifyResponseHandlers(r.copyOfRange(0, r.size - 1))
             p.handleResult(r.last())
             r.filterIsInstance<IMAPResponse>().filter { it.keyEquals("SEARCH") }.flatMap { resp ->

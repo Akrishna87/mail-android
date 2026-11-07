@@ -121,6 +121,12 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     val activeFolder: String get() = searchFolder ?: folder
 
     private var page = 1
+
+    /** Which list [messages] holds (see [listKey]); a list is only saved under its own key. */
+    private var messagesKey: String? = null
+
+    /** The list key last loaded from the server; a saved copy never replaces it. */
+    private var serverKey: String? = null
     private var categoryUids: List<Long> = emptyList()
     private var running = 0
     private var lastRefresh = 0L
@@ -134,7 +140,10 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
             viewModelScope.launch {
                 // Show what was saved last time immediately, then update from the server.
                 val (savedFolders, savedList) = withContext(Dispatchers.IO) { cache.loadFolders() to cache.loadList(listKey(folder)) }
-                if (messages.isEmpty()) messages = savedList
+                if (messages.isEmpty()) {
+                    messages = savedList
+                    messagesKey = listKey(folder)
+                }
                 if (folders.isEmpty()) folders = savedFolders
                 refresh()
             }
@@ -385,9 +394,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         category = cat
         categoryUids = emptyList()
         prefetchJob?.cancel()
+        // Don't leave the previous folder's or tab's emails on screen (or let them be saved) under the new one.
+        val key = listKey(fullName)
+        messages = emptyList()
+        messagesKey = key
+        serverKey = null
         viewModelScope.launch {
-            val saved = withContext(Dispatchers.IO) { cache.loadList(listKey(fullName)) }
-            if (folder == fullName && category == cat) messages = saved
+            val saved = withContext(Dispatchers.IO) { cache.loadList(key) }
+            if (messagesKey == key && serverKey != key) messages = saved
         }
         launchTask {
             loadMessages(reset = true)
@@ -434,6 +448,8 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         val fresh = result.messages.map { it.copy(preview = previews[it.uid]) }
         // New mail shifts the pages, so the next page can repeat a message.
         messages = if (reset) fresh else (messages + fresh).distinctBy { it.uid }
+        messagesKey = listKey(f)
+        serverKey = messagesKey
         hasMore = result.hasMore
         knownSenders = (knownSenders + messages.map { it.from }).distinct().take(MAX_KNOWN_SENDERS)
         if (reset) persistList(f)
@@ -441,7 +457,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     /** Saves the shown list for [f], unless it is showing search results. */
     private suspend fun persistList(f: String) {
-        if (searchQuery != null || f != folder) return
+        if (searchQuery != null || f != folder || messagesKey != listKey(f)) return
         val snapshot = messages
         val key = listKey(f)
         withContext(Dispatchers.IO) { cache.saveList(key, snapshot) }
