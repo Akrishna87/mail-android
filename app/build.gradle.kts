@@ -21,6 +21,7 @@ android {
         val msClientId = providers.gradleProperty("msClientId").getOrElse("")
         buildConfigField("String", "MS_CLIENT_ID", "\"$msClientId\"")
         manifestPlaceholders["appAuthRedirectScheme"] = "com.akrishna87.mail"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
     // CI decodes the signing key from repository secrets; see .github/workflows/build.yml.
@@ -75,4 +76,11 @@ dependencies {
     implementation("net.openid:appauth:0.11.1")
     implementation("com.sun.mail:android-mail:1.6.8")
     implementation("com.sun.mail:android-activation:1.6.8")
+
+    // UI tests that run on an Android emulator in CI.
+    androidTestImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
+    androidTestImplementation("androidx.compose.ui:ui-test-junit4")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    debugImplementation("androidx.compose.ui:ui-test-manifest")
 }

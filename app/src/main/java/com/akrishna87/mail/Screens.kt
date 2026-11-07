@@ -399,7 +399,7 @@ private fun SearchBar(vm: MailViewModel, onMenu: () -> Unit, onSearch: () -> Uni
 /** Actions for the selected messages, shown in place of the search bar. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SelectionBar(vm: MailViewModel) {
+internal fun SelectionBar(vm: MailViewModel) {
     val chosen = vm.messages.filter { it.uid in vm.selection }
     val anyUnread = chosen.any { !it.seen }
     val allStarred = chosen.isNotEmpty() && chosen.all { it.flagged }
@@ -531,7 +531,7 @@ private fun folderLabel(f: MailFolder): String = when (f.role) {
 /** Swipe either way to archive (in the inbox) or delete, with Undo. */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
+internal fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
     val archive = vm.canArchive
     val state = rememberSwipeToDismissBoxState(
         confirmValueChange = { value ->
@@ -891,6 +891,12 @@ private fun SettingsScreen(vm: MailViewModel) {
                     }) { Text("Allow background use") }
                 }
             }
+            Text(
+                "Mailroom ${BuildConfig.VERSION_NAME}",
+                Modifier.padding(16.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = soft,
+            )
             if (vm.syncMode == SyncMode.PUSH) {
                 Text(
                     "Android requires a notification while push is on. To hide it, long-press it and turn off " +

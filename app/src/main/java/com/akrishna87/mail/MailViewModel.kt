@@ -5,6 +5,7 @@ import android.content.Intent
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.text.format.DateUtils
+import androidx.annotation.VisibleForTesting
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
@@ -503,6 +504,12 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
 
     fun clearSelection() {
         selection = emptySet()
+    }
+
+    /** Lets UI tests show a list without an account or network. */
+    @VisibleForTesting
+    internal fun showMessagesForTest(list: List<MessageSummary>) {
+        messages = list
     }
 
     fun archiveSelected() = archiveAll(selection.toList())
