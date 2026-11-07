@@ -510,6 +510,7 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     @VisibleForTesting
     internal fun showMessagesForTest(list: List<MessageSummary>) {
         messages = list
+        screen = Screen.Mailbox
     }
 
     fun archiveSelected() = archiveAll(selection.toList())
