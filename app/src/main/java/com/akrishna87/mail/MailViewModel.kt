@@ -550,9 +550,14 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
     var opening by mutableStateOf<MessageSummary?>(null)
         private set
 
-    /** How long the last email took to open, shown in Settings. */
-    var lastOpenTiming by mutableStateOf<String?>(null)
+    /** The last emails opened and where their time went, newest first (Settings → Recent opens). */
+    var openLog by mutableStateOf(store.openLog)
         private set
+
+    fun clearOpenLog() {
+        openLog = emptyList()
+        store.openLog = emptyList()
+    }
 
     fun open(uid: Long) {
         val a = account ?: return
@@ -562,15 +567,32 @@ class MailViewModel(app: Application) : AndroidViewModel(app) {
         opening = row
         screen = Screen.Reader(uid)
         val started = System.currentTimeMillis()
+        val timing = LoadTiming()
         launchTask {
             val cached = withContext(Dispatchers.IO) { cache.load(f, uid) }
             val detail = cached
-                ?: mail.message(a, f, uid, row?.size ?: 0).also { withContext(Dispatchers.IO) { cache.save(f, it) } }
+                ?: mail.message(a, f, uid, row?.size ?: 0, timing).also { withContext(Dispatchers.IO) { cache.save(f, it) } }
             if (screen == Screen.Reader(uid)) message = detail
-            val seconds = (System.currentTimeMillis() - started) / 1000.0
-            lastOpenTiming = "Last email opened in %.1f s (%s)".format(seconds, if (cached != null) "saved on phone" else "downloaded")
+            recordOpen(detail, row, cached != null, System.currentTimeMillis() - started, timing)
             markRead(a, f, uid)
         }
+    }
+
+    private fun recordOpen(m: MessageDetail, row: MessageSummary?, fromPhone: Boolean, totalMs: Long, timing: LoadTiming) {
+        val record = OpenRecord(
+            at = System.currentTimeMillis(),
+            from = row?.from ?: m.from,
+            subject = m.subject,
+            sizeBytes = row?.size ?: 0,
+            fromPhone = fromPhone,
+            totalMs = totalMs,
+            waitMs = timing.waitMs,
+            connectMs = timing.connectMs,
+            downloadMs = timing.downloadMs,
+            parseMs = timing.parseMs,
+        )
+        openLog = (listOf(record) + openLog).take(OpenRecord.KEEP)
+        store.openLog = openLog
     }
 
     private fun markRead(a: Account, f: String, uid: Long) {

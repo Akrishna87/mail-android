@@ -192,20 +192,30 @@ class MailService(private val context: Context, private val store: AccountStore)
     private var roles: Map<String, String> = emptyMap() // role -> folder full name
 
     /** Runs [block] on a background thread with the open IMAP connection, one operation at a time. */
-    private suspend fun <T> imap(account: Account, block: (IMAPStore) -> T): T = lock.withLock {
-        withContext(Dispatchers.IO) {
-            val reused = connection != null && connectedAccount == account
-            try {
-                block(connected(account))
-            } catch (e: MessagingException) {
-                if (!reused || e is AuthenticationFailedException) throw e
-                // The kept-open connection dropped (phone slept, network changed): reconnect once.
-                discard()
-                block(connected(account))
-            } finally {
-                lastUsed = System.currentTimeMillis()
+    private suspend fun <T> imap(account: Account, timing: LoadTiming? = null, block: (IMAPStore) -> T): T {
+        val queued = System.currentTimeMillis()
+        return lock.withLock {
+            timing?.waitMs = System.currentTimeMillis() - queued
+            withContext(Dispatchers.IO) {
+                val reused = connection != null && connectedAccount == account
+                try {
+                    block(timed(timing) { connected(account) })
+                } catch (e: MessagingException) {
+                    if (!reused || e is AuthenticationFailedException) throw e
+                    // The kept-open connection dropped (phone slept, network changed): reconnect once.
+                    discard()
+                    block(timed(timing) { connected(account) })
+                } finally {
+                    lastUsed = System.currentTimeMillis()
+                }
             }
         }
+    }
+
+    /** Runs [connect], adding its duration to [timing]'s connect time. */
+    private suspend fun timed(timing: LoadTiming?, connect: suspend () -> IMAPStore): IMAPStore {
+        val start = System.currentTimeMillis()
+        return connect().also { timing?.let { it.connectMs += System.currentTimeMillis() - start } }
     }
 
     private suspend fun connected(account: Account): IMAPStore {
@@ -384,29 +394,36 @@ class MailService(private val context: Context, private val store: AccountStore)
     }
 
     /** Downloads one message without marking it read. */
-    suspend fun message(account: Account, folderName: String, uid: Long, size: Int = 0): MessageDetail =
+    suspend fun message(account: Account, folderName: String, uid: Long, size: Int = 0, timing: LoadTiming? = null): MessageDetail =
         if (size > LARGE_MESSAGE) {
-            largeMessage(account, folderName, uid)
+            largeMessage(account, folderName, uid, timing)
         } else {
-            prefetch(account, folderName, listOf(uid))[uid] ?: throw MessagingException("This message no longer exists")
+            prefetch(account, folderName, listOf(uid), timing)[uid] ?: throw MessagingException("This message no longer exists")
         }
 
     /**
      * A big message (usually big attachments) part by part: the structure, then only the text and
      * small inline images. Attachments download when opened, instead of before the email shows.
      */
-    private suspend fun largeMessage(account: Account, folderName: String, uid: Long): MessageDetail = imap(account) { s ->
-        val m = byUid(selected(s, folderName), listOf(uid)).firstOrNull() as? MimeMessage
-            ?: throw MessagingException("This message no longer exists")
-        parse(uid, m)
-    }
+    private suspend fun largeMessage(account: Account, folderName: String, uid: Long, timing: LoadTiming?): MessageDetail =
+        imap(account, timing) { s ->
+            // Parts download while parsing, so all of it counts as downloading.
+            val start = System.currentTimeMillis()
+            val m = byUid(selected(s, folderName), listOf(uid)).firstOrNull() as? MimeMessage
+                ?: throw MessagingException("This message no longer exists")
+            parse(uid, m).also { timing?.downloadMs = System.currentTimeMillis() - start }
+        }
 
     /** Downloads several messages in one request, without marking them read. */
-    suspend fun prefetch(account: Account, folderName: String, uids: List<Long>): Map<Long, MessageDetail> =
-        imap(account) { s ->
+    suspend fun prefetch(account: Account, folderName: String, uids: List<Long>, timing: LoadTiming? = null): Map<Long, MessageDetail> =
+        imap(account, timing) { s ->
+            val start = System.currentTimeMillis()
             val raw = fetchRaw(selected(s, folderName), uids)
+            val downloaded = System.currentTimeMillis()
+            timing?.downloadMs = downloaded - start
             val session = connectionSession!!
             raw.mapValues { (uid, bytes) -> parse(uid, MimeMessage(session, bytes.inputStream())) }
+                .also { timing?.parseMs = System.currentTimeMillis() - downloaded }
         }
 
     /** Sets or clears an IMAP system flag, such as Seen (read) or Flagged (starred), with one command. */

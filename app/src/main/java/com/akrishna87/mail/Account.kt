@@ -91,5 +91,10 @@ class AccountStore(context: Context) {
         get() = runCatching { AppTheme.valueOf(prefs.getString("theme", null) ?: "") }.getOrDefault(AppTheme.NIGHT)
         set(value) = prefs.edit().putString("theme", value.name).apply()
 
+    /** The last emails opened and how long each took (Settings → Recent opens). */
+    var openLog: List<OpenRecord>
+        get() = OpenRecord.listFromJson(prefs.getString("openLog", "[]").orEmpty())
+        set(value) = prefs.edit().putString("openLog", OpenRecord.listToJson(value)).apply()
+
     fun clear() = prefs.edit().clear().apply()
 }

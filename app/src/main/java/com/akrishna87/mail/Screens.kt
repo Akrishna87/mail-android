@@ -1136,9 +1136,7 @@ private fun SettingsScreen(vm: MailViewModel) {
                 }
             }
             Text(status, Modifier.padding(16.dp), style = MaterialTheme.typography.bodySmall, color = soft)
-            vm.lastOpenTiming?.let {
-                Text(it, Modifier.padding(horizontal = 16.dp), style = MaterialTheme.typography.bodySmall, color = soft)
-            }
+            OpenLogSection(vm)
 
             if (vm.syncMode != SyncMode.MANUAL && !unrestricted) {
                 HorizontalDivider()
@@ -1182,6 +1180,45 @@ private fun SettingsScreen(vm: MailViewModel) {
             }
         }
     }
+}
+
+/** How long recently opened emails took, and for downloaded ones which step took the time. */
+@Composable
+private fun OpenLogSection(vm: MailViewModel) {
+    val context = LocalContext.current
+    val soft = MaterialTheme.colorScheme.onSurfaceVariant
+    HorizontalDivider()
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 8.dp, top = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        Text(
+            "Recent opens",
+            Modifier.weight(1f),
+            style = MaterialTheme.typography.titleSmall,
+            color = MaterialTheme.colorScheme.primary,
+        )
+        if (vm.openLog.isNotEmpty()) TextButton(onClick = vm::clearOpenLog) { Text("Clear") }
+    }
+    if (vm.openLog.isEmpty()) {
+        Text(
+            "Open a few emails, and how long each took shows here.",
+            Modifier.padding(horizontal = 16.dp, vertical = 8.dp),
+            style = MaterialTheme.typography.bodySmall,
+            color = soft,
+        )
+    }
+    vm.openLog.forEach { r ->
+        Column(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 6.dp)) {
+            Text(r.headline(), style = MaterialTheme.typography.bodyMedium, maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Text(
+                "${shortDate(context, r.at)} \u00B7 ${r.subject}",
+                style = MaterialTheme.typography.bodySmall,
+                color = soft,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+            r.breakdown()?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = soft) }
+        }
+    }
+    Spacer(Modifier.height(16.dp))
 }
 
 /** Round colour swatches, one per theme, with a check on the chosen one. */
