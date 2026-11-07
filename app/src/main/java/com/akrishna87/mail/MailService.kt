@@ -71,7 +71,7 @@ data class MessageDetail(
     val attachments: List<ReceivedAttachment> = emptyList(),
 ) {
     /** One-line preview for the message list. */
-    val preview: String get() = text.replace(Regex("\\s+"), " ").trim().take(160)
+    val preview: String get() = cleanPreview(text)
 }
 
 /** An attachment on a received message; [index] is its position among the message's attachments. */
@@ -544,7 +544,9 @@ class MailService(private val context: Context, private val store: AccountStore)
         val body = Body()
         extract(m, body)
         val from = m.from?.firstOrNull() as? InternetAddress
-        val html = body.html?.let { html ->
+        // Some senders put HTML in the plain-text part; treat it as the HTML version.
+        val plainIsHtml = body.text?.let(::looksLikeHtml) == true
+        val html = (body.html ?: body.text?.takeIf { plainIsHtml })?.let { html ->
             // Show images embedded in the message (logos, signatures) by inlining them.
             body.inline.entries.fold(html) { acc, (cid, dataUri) -> acc.replace("cid:$cid", dataUri, ignoreCase = true) }
         }
@@ -557,7 +559,7 @@ class MailService(private val context: Context, private val store: AccountStore)
             subject = m.subject ?: "(no subject)",
             date = m.sentDate,
             html = html,
-            text = body.text ?: body.html?.let(::htmlToText) ?: "",
+            text = (if (plainIsHtml) null else body.text) ?: html?.let(::htmlToText) ?: "",
             messageId = m.getHeader("Message-ID")?.firstOrNull(),
             references = m.getHeader("References")?.firstOrNull(),
             attachments = attachmentParts(m).mapIndexed { i, p ->
@@ -612,7 +614,7 @@ class MailService(private val context: Context, private val store: AccountStore)
         HtmlCompat.fromHtml(
             html.replace(Regex("(?is)<(style|script|head)\\b.*?</\\1>"), ""),
             HtmlCompat.FROM_HTML_MODE_LEGACY,
-        ).toString()
+        ).toString().replace("\uFFFC", "")
 
     private fun attachmentPart(a: Attachment): MimeBodyPart {
         val bytes = context.contentResolver.openInputStream(Uri.parse(a.uri))?.use { it.readBytes() }

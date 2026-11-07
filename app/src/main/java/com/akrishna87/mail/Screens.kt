@@ -122,6 +122,7 @@ import androidx.compose.ui.focus.onFocusChanged
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.lerp
+import androidx.compose.ui.graphics.luminance
 import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.painter.Painter
 import androidx.compose.ui.graphics.toArgb
@@ -339,6 +340,7 @@ private fun MailboxScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                 LazyColumn(Modifier.fillMaxSize(), state = listState) {
                     items(vm.messages, key = { it.uid }) { m ->
                         SwipeableRow(vm, m)
+                        RowDivider()
                     }
                     if (vm.hasMore) {
                         item {
@@ -378,7 +380,7 @@ private fun MailboxHeader(title: String, vm: MailViewModel, onMenu: () -> Unit, 
             title,
             Modifier.weight(1f),
             style = MaterialTheme.typography.headlineMedium.copy(
-                brush = Brush.linearGradient(LocalAccent.current.map { it.lighten() }),
+                brush = Brush.linearGradient(LocalAccent.current.map { if (isDark()) it.lighten() else it }),
                 fontWeight = FontWeight.ExtraBold,
             ),
             maxLines = 1,
@@ -411,7 +413,8 @@ private fun CategoryChips(vm: MailViewModel) {
                     .clickable { vm.selectCategory(cat) }
                     .padding(horizontal = 14.dp, vertical = 8.dp),
                 style = MaterialTheme.typography.labelLarge,
-                color = if (chosen) Color.White else categoryColor(cat)?.lighten() ?: MaterialTheme.colorScheme.onSurfaceVariant,
+                color = if (chosen) Color.White else categoryColor(cat)?.let { if (isDark()) it.lighten() else it }
+                    ?: MaterialTheme.colorScheme.onSurfaceVariant,
             )
         }
     }
@@ -464,6 +467,9 @@ private fun RowScope.BarItem(icon: Painter, label: String, selected: Boolean, on
         Text(label, style = MaterialTheme.typography.labelSmall, color = tint)
     }
 }
+
+@Composable
+private fun isDark(): Boolean = MaterialTheme.colorScheme.surface.luminance() < 0.5f
 
 /** A lighter version of a colour, for gradient text and labels on dark backgrounds. */
 private fun Color.lighten(amount: Float = 0.35f): Color = lerp(this, Color.White, amount)
@@ -651,7 +657,7 @@ private fun FolderDrawer(
                 "Mailroom",
                 Modifier.padding(start = 28.dp, top = 24.dp, bottom = 16.dp),
                 style = MaterialTheme.typography.headlineSmall.copy(
-                    brush = Brush.linearGradient(LocalAccent.current.map { it.lighten() }),
+                    brush = Brush.linearGradient(LocalAccent.current.map { if (isDark()) it.lighten() else it }),
                     fontWeight = FontWeight.ExtraBold,
                 ),
             )
@@ -760,14 +766,7 @@ internal fun SwipeableRow(vm: MailViewModel, m: MessageSummary) {
         },
     )
     val selecting = vm.selection.isNotEmpty()
-    val card = RoundedCornerShape(18.dp)
-    val glow = if (!m.seen && m.uid !in vm.selection) {
-        Modifier.border(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f), card)
-    } else {
-        Modifier
-    }
     SwipeToDismissBox(
-        modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp).clip(card).then(glow),
         state = state,
         enableDismissFromStartToEnd = !selecting,
         enableDismissFromEndToStart = !selecting,
@@ -806,15 +805,7 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
     Row(
         Modifier
             .fillMaxWidth()
-            .background(
-                when {
-                    selected -> SolidColor(MaterialTheme.colorScheme.secondaryContainer)
-                    unread -> Brush.linearGradient(
-                        listOf(MaterialTheme.colorScheme.surfaceContainerHigh, MaterialTheme.colorScheme.primaryContainer),
-                    )
-                    else -> SolidColor(MaterialTheme.colorScheme.surfaceContainer)
-                },
-            )
+            .background(if (selected) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.surface)
             .combinedClickable(onClick = onClick, onLongClick = onSelect)
             .padding(start = 16.dp, end = 8.dp, top = 12.dp, bottom = 12.dp),
     ) {
@@ -832,6 +823,9 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
         Spacer(Modifier.width(16.dp))
         Column(Modifier.weight(1f)) {
             Row(verticalAlignment = Alignment.CenterVertically) {
+                if (unread) {
+                    Box(Modifier.padding(end = 6.dp).size(8.dp).clip(CircleShape).background(Brush.linearGradient(LocalAccent.current)))
+                }
                 Text(
                     m.from,
                     Modifier.weight(1f),
@@ -860,7 +854,7 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
                         overflow = TextOverflow.Ellipsis,
                     )
                     Text(
-                        m.preview.orEmpty(),
+                        cleanPreview(m.preview.orEmpty()),
                         style = MaterialTheme.typography.bodyMedium,
                         color = soft,
                         maxLines = 1,
@@ -871,6 +865,12 @@ private fun MessageRow(m: MessageSummary, selected: Boolean, onClick: () -> Unit
             }
         }
     }
+}
+
+/** A hairline between emails, starting after the avatar, as in Gmail. */
+@Composable
+private fun RowDivider() {
+    HorizontalDivider(Modifier.padding(start = 72.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.6f))
 }
 
 @Composable
@@ -1047,7 +1047,10 @@ private fun SearchResults(vm: MailViewModel) {
         }
         if (vm.loading) LinearProgressIndicator(Modifier.fillMaxWidth())
         LazyColumn(Modifier.fillMaxSize()) {
-            items(vm.messages, key = { it.uid }) { m -> SwipeableRow(vm, m) }
+            items(vm.messages, key = { it.uid }) { m ->
+                SwipeableRow(vm, m)
+                RowDivider()
+            }
             if (vm.hasMore) {
                 item {
                     TextButton(onClick = vm::loadMore, modifier = Modifier.fillMaxWidth()) { Text("More results") }
@@ -1447,7 +1450,7 @@ private fun EmailBody(m: MessageDetail, onScrolled: (Boolean) -> Unit) {
  * (often 600-700px) to the screen so text stays readable; zooming out is only the fallback.
  */
 private fun emailDocument(m: MessageDetail, dark: Boolean): String {
-    val content = m.html ?: plainTextToHtml(m.text)
+    val content = m.html ?: m.text.takeIf(::looksLikeHtml) ?: plainTextToHtml(m.text)
     val colors = if (m.html == null && dark) {
         "body{background:#1b1b1f;color:#e4e2e6} a{color:#a8c7fa}"
     } else {

@@ -73,10 +73,15 @@ fun MailTheme(theme: AppTheme, content: @Composable () -> Unit) {
 }
 
 /** Gradient stops for Night and the tinted themes; null when it comes from the phone (Wallpaper) or Gmail (Classic). */
-fun accentGradient(theme: AppTheme): List<Color>? = when {
-    theme == AppTheme.NIGHT -> NIGHT_ACCENT
-    theme.hue != null -> listOf(hsl(theme.hue, 0.65f, 0.32f), hsl(theme.hue + 35f, 0.60f, 0.32f), hsl(theme.hue + 70f, 0.60f, 0.27f))
-    else -> null
+fun accentGradient(theme: AppTheme): List<Color>? = when (theme) {
+    // Two hand-picked colours each: a hue-shifted formula went through browns and olives.
+    AppTheme.NIGHT -> NIGHT_ACCENT
+    AppTheme.OCEAN -> listOf(Color(0xFF1D4ED8), Color(0xFF7C3AED))
+    AppTheme.FOREST -> listOf(Color(0xFF15803D), Color(0xFF0F766E))
+    AppTheme.SUNSET -> listOf(Color(0xFFC2410C), Color(0xFFBE185D))
+    AppTheme.LAVENDER -> listOf(Color(0xFF6D28D9), Color(0xFFA21CAF))
+    AppTheme.ROSE -> listOf(Color(0xFFBE123C), Color(0xFF7C3AED))
+    AppTheme.WALLPAPER, AppTheme.CLASSIC -> null
 }
 
 private val NIGHT_ACCENT = listOf(Color(0xFF2563EB), Color(0xFF7C3AED), Color(0xFFDB2777))
