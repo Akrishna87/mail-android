@@ -16,7 +16,10 @@ data class Account(
     val email: String,
     val name: String,
     val password: String,
-)
+) {
+    /** Never expose credentials or personal details through implicit logging. */
+    override fun toString(): String = "Account([REDACTED])"
+}
 
 /** Stores the signed-in account in encrypted preferences on the device. */
 class AccountStore(context: Context) {
