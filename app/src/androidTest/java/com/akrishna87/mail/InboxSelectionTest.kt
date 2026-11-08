@@ -55,4 +55,14 @@ class InboxSelectionTest {
         compose.onNodeWithText("\u2713 Unread").performClick()
         compose.runOnIdle { assertEquals(false, vm.unreadOnly) }
     }
+
+    @Test
+    fun searchScreenOffersVoiceSearch() {
+        val vm = MailViewModel(ApplicationProvider.getApplicationContext<Application>())
+        vm.showMessagesForTest(listOf(MessageSummary(uid = 1, from = "Sender", subject = "Subject", date = null, seen = false)))
+        vm.openSearch()
+        compose.setContent { MaterialTheme { MailApp(vm) } }
+
+        compose.onNodeWithContentDescription("Voice search").assertIsDisplayed()
+    }
 }

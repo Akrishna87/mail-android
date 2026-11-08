@@ -43,7 +43,7 @@ The password stays encrypted on your phone. To revoke it, delete it on the same 
 
 **Writing**: To, Cc, Bcc, attachments (up to 25 MB in total).
 
-**Search** like Gmail: recent searches, sender suggestions, filter chips (Unread, Starred, Has attachment, dates).
+**Search** like Gmail: type or tap the microphone to speak, recent searches, sender suggestions, filter chips (Unread, Starred, Has attachment, dates).
 Every Gmail search works (`from:`, `subject:`, `has:attachment`, `is:unread`, `older_than:1y`, `OR`, ...) across all mail.
 
 **Snooze**: later today, tomorrow, this weekend or next week. Snoozed mail waits in a

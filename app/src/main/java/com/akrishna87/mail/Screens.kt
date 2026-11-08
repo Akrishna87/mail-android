@@ -6,6 +6,7 @@ import android.content.Intent
 import android.net.Uri
 import android.os.Build
 import android.os.PowerManager
+import android.speech.RecognizerIntent
 import android.text.TextUtils
 import android.text.format.DateUtils
 import android.text.format.Formatter
@@ -879,6 +880,23 @@ private fun SearchScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
         focusManager.clearFocus()
         vm.search(query)
     }
+    // Voice search: Android's speech recognizer (Google's on most phones) listens and returns the
+    // words, which are searched right away, like the Gmail app's microphone.
+    val voice = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
+        result.data?.getStringArrayListExtra(RecognizerIntent.EXTRA_RESULTS)?.firstOrNull()
+            ?.takeIf { it.isNotBlank() }
+            ?.let(submit)
+    }
+    val listen: () -> Unit = {
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH)
+            .putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            .putExtra(RecognizerIntent.EXTRA_PROMPT, "Search in mail")
+        try {
+            voice.launch(intent)
+        } catch (e: ActivityNotFoundException) {
+            vm.notice = "Voice search needs the Google app or another speech service on this phone"
+        }
+    }
     LaunchedEffect(vm.searchQuery) { vm.searchQuery?.let { text = it } }
     LaunchedEffect(Unit) { if (typing) focus.requestFocus() }
 
@@ -919,6 +937,10 @@ private fun SearchScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
                             typing = true
                             focus.requestFocus()
                         }) { Icon(Icons.Default.Close, contentDescription = "Clear search") }
+                    } else {
+                        IconButton(onClick = listen) {
+                            Icon(painterResource(R.drawable.ic_mic), contentDescription = "Voice search")
+                        }
                     }
                 }
             }
