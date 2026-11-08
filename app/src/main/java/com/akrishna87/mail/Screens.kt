@@ -112,6 +112,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -898,7 +899,11 @@ private fun SearchScreen(vm: MailViewModel, snackbar: SnackbarHostState) {
         }
     }
     LaunchedEffect(vm.searchQuery) { vm.searchQuery?.let { text = it } }
-    LaunchedEffect(Unit) { if (typing) focus.requestFocus() }
+    LaunchedEffect(Unit) {
+        // Wait a frame so the search box is laid out; focusing it before that throws.
+        withFrameNanos { }
+        if (typing) runCatching { focus.requestFocus() }
+    }
 
     Scaffold(
         topBar = {
